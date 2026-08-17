@@ -3,10 +3,16 @@ import { TimeEngine, type TimeDelta } from './time/engine.js';
 import { buildActiveLinks, radiusFor } from './layout/graph.js';
 import type { FromWorker, LayoutInit, LayoutUpdate } from './layout/protocol.js';
 import { Camera } from './render/camera.js';
-import { DIR_COLOR_INDEX, drawScene, paletteIndexForPath, type SceneInput } from './render/scene.js';
+import { drawScene, type SceneInput } from './render/scene.js';
+import { DIR_COLOR_INDEX, paletteIndexForPath } from './render/palette.js';
+import { deriveActivity } from './render/activity.js';
 import { Playback } from './time/playback.js';
 import { formatCommitLabel, mountTransport } from './ui/transport.js';
 import type { Pack } from '../src/model/types.js';
+import { RecentEvents } from './time/recent.js';
+import { ActorField } from './render/actors.js';
+import { avatarColor, initialsFor } from './render/avatar.js';
+import type { ActorLayer, BeamLayer } from './render/scene.js';
 
 async function start(): Promise<void> {
   const canvas = document.getElementById('scene') as HTMLCanvasElement;
@@ -28,6 +34,37 @@ async function start(): Promise<void> {
       pack.pathIsDir[path] === 1 ? DIR_COLOR_INDEX : paletteIndexForPath(pack.paths[path]!);
   }
 
+  /** Сколько миллисекунд живёт луч и вспышка. */
+  const ACTIVITY_MS = 1200;
+  /** Потолок числа одновременно светящихся событий: первый коммит трогает всё. */
+  const ACTIVITY_CAPACITY = 512;
+
+  const authorCount = pack.authors.length;
+  const recent = new RecentEvents(ACTIVITY_CAPACITY, ACTIVITY_MS, authorCount);
+  const actorField = new ActorField(authorCount);
+
+  const actors: ActorLayer = {
+    positions: actorField.positions,
+    active: actorField.active,
+    color: pack.authors.map((author) => avatarColor(author.email)),
+    initials: pack.authors.map((author) => initialsFor(author.name, author.email)),
+    name: pack.authors.map((author) => author.name),
+  };
+
+  const beams: BeamLayer = {
+    count: 0,
+    fromX: new Float32Array(ACTIVITY_CAPACITY),
+    fromY: new Float32Array(ACTIVITY_CAPACITY),
+    toX: new Float32Array(ACTIVITY_CAPACITY),
+    toY: new Float32Array(ACTIVITY_CAPACITY),
+    author: new Uint32Array(ACTIVITY_CAPACITY),
+    strength: new Float32Array(ACTIVITY_CAPACITY),
+  };
+
+  const flash = new Float32Array(pathCount);
+  /** Пути, которым в прошлом кадре ставили свечение: гасим только их. */
+  let litPaths: number[] = [];
+
   const scene: SceneInput = {
     active: new Uint8Array(pathCount),
     positions: new Float32Array(pathCount * 2),
@@ -35,6 +72,9 @@ async function start(): Promise<void> {
     color,
     linkSource: new Uint32Array(0),
     linkTarget: new Uint32Array(0),
+    flash,
+    beams,
+    actors,
   };
 
   const camera = new Camera();
@@ -77,8 +117,16 @@ async function start(): Promise<void> {
 
   const engine = new TimeEngine(pack);
 
-  /** Неизменная часть строки состояния: имя, коммиты, файлы, авторы. */
+  /** Неизменная часть строки состояния: имя, коммиты, файлы. */
   const packDescription = describePack(pack);
+
+  let liveNodes = 0;
+  let shownAuthors = -1;
+
+  function renderStatus(): void {
+    if (!status) return;
+    status.textContent = `${packDescription} · узлов: ${liveNodes} · авторов: ${shownAuthors < 0 ? 0 : shownAuthors}`;
+  }
 
   /**
    * Переносит разницу движка времени в сцену и в воркер.
@@ -101,6 +149,13 @@ async function start(): Promise<void> {
       radiusValues.push(next);
     };
     if (full) {
+      // Перемотка обязана погасить чужую активность: без этого буфер держал
+      // бы лучи прежнего момента, нацеленные на пути, которые в новой позиции
+      // либо мертвы, либо принадлежат совсем другому коммиту. Вместе с буфером
+      // забывается и поле авторов: его позиции относятся к прежнему месту
+      // истории, и значок полз бы к новой цели дольше, чем живёт луч.
+      recent.clear();
+      actorField.reset();
       for (let path = 0; path < pathCount; path++) {
         if (scene.active[path] === 1) remember(path);
       }
@@ -138,12 +193,22 @@ async function start(): Promise<void> {
     };
     worker.postMessage(update);
 
+    // Лучи заводятся только на шаге воспроизведения. Перемотка приходит с
+    // full = true, и вспыхивать на ней нечему: пользователь не смотрит, как
+    // работали авторы, он ищет место в истории.
+    if (!full && engine.cursor >= 0) {
+      const author = pack.commitAuthor[engine.cursor]!;
+      const now = performance.now();
+      for (const path of delta.touched) recent.push(path, author, now);
+    }
+
     if (status) {
       // Описание репозитория за сессию не меняется и посчитано один раз выше:
       // на шаге воспроизведения остаётся только пересчитать живые узлы.
       let live = 0;
       for (let path = 0; path < pathCount; path++) if (scene.active[path] === 1) live++;
-      status.textContent = `${packDescription} · узлов: ${live}`;
+      liveNodes = live;
+      renderStatus();
     }
   }
 
@@ -207,6 +272,46 @@ async function start(): Promise<void> {
     lastFrameMs = nowMs;
     try {
       if (playback.advance(dt) > 0) syncTransport();
+
+      // Весь вывод кадра из буфера событий живёт в deriveActivity: здесь
+      // остаётся только разложить его результат по слоям сцены.
+      const activity = deriveActivity(recent, scene, nowMs, ACTIVITY_CAPACITY);
+
+      // Гасим только то, что светилось в прошлом кадре: полный проход по всем
+      // путям на каждом кадре был бы дороже самой отрисовки лучей.
+      for (const path of litPaths) flash[path] = 0;
+      litPaths = [];
+      for (const lit of activity.flashes) {
+        flash[lit.path] = lit.strength;
+        litPaths.push(lit.path);
+      }
+
+      beams.count = activity.beams.length;
+      for (let i = 0; i < activity.beams.length; i++) {
+        const beam = activity.beams[i]!;
+        beams.toX[i] = beam.toX;
+        beams.toY[i] = beam.toY;
+        beams.author[i] = beam.author;
+        beams.strength[i] = beam.strength;
+      }
+
+      actorField.update(dt, activity.targets);
+
+      // Начало луча — там, где значок оказался после этого шага поля.
+      for (let i = 0; i < beams.count; i++) {
+        const author = beams.author[i]!;
+        beams.fromX[i] = actorField.positions[author * 2]!;
+        beams.fromY[i] = actorField.positions[author * 2 + 1]!;
+      }
+
+      // Счётчик авторов в статусе — это ровно те, у кого есть цель, то есть
+      // хоть один живой видимый файл. Он не может разойтись с картинкой,
+      // потому что считается из того же вывода.
+      if (activity.targets.length !== shownAuthors) {
+        shownAuthors = activity.targets.length;
+        renderStatus();
+      }
+
       drawScene(ctx, camera, scene, canvas.clientWidth, canvas.clientHeight);
     } catch (error) {
       showFatal(

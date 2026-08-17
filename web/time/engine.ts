@@ -1,4 +1,5 @@
 import { ALIVE, KIND_DELETE } from '../../src/model/history.js';
+import { FLAG_SYNTHETIC } from '../../src/model/types.js';
 import type { Pack } from '../../src/model/types.js';
 
 /** Курсор до первого коммита: не живо ничего. */
@@ -152,7 +153,10 @@ export class TimeEngine {
     for (let e = pack.commitEventStart[next]; e < pack.commitEventStart[next + 1]; e++) {
       const path = pack.eventPath[e];
       const kind = pack.eventKind[e];
-      if (!touchedSeen.has(path)) {
+      // Синтетические удаления дописаны сверкой с деревом HEAD, а не автором
+      // коммита: на живость и размер они влияют, но лучей и вспышек давать не
+      // должны — иначе последний коммит выстрелит по всем похороненным файлам.
+      if ((pack.eventFlags[e] & FLAG_SYNTHETIC) === 0 && !touchedSeen.has(path)) {
         touchedSeen.add(path);
         touched.push(path);
       }
