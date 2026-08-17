@@ -1793,6 +1793,63 @@ describe('кодек pack', () => {
     expect(() => decodePack(new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12])))
       .toThrow(PackError);
   });
+
+  // Порча собственного формата обязана давать PackError с внятным текстом,
+  // а не RangeError из конструктора typed array: обрыв ответа сервера,
+  // пакет от другой сборки и подобное попадут на экран ошибки в браузере.
+  describe('порча данных', () => {
+    const pack = buildPack(randomCommits(11, 20), { repoName: 'демо', head: 'abc1234' });
+
+    /** Пересобирает пакет с изменённым JSON-заголовком. */
+    function corruptHeader(mutate: (header: Record<string, unknown>) => void): Uint8Array {
+      const encoded = encodePack(pack);
+      const view = new DataView(encoded.buffer, encoded.byteOffset, encoded.byteLength);
+      const headerLength = view.getUint32(8, true);
+      const header = JSON.parse(
+        new TextDecoder().decode(encoded.subarray(12, 12 + headerLength)),
+      ) as Record<string, unknown>;
+      mutate(header);
+
+      const headerBytes = new TextEncoder().encode(JSON.stringify(header));
+      const dataStart = (12 + headerBytes.length + 3) & ~3;
+      const oldDataStart = (12 + headerLength + 3) & ~3;
+      const out = new Uint8Array(dataStart + (encoded.length - oldDataStart));
+      out.set(encoded.subarray(0, 12), 0);
+      new DataView(out.buffer).setUint32(8, headerBytes.length, true);
+      out.set(headerBytes, 12);
+      out.set(encoded.subarray(oldDataStart), dataStart);
+      return out;
+    }
+
+    it('отвергает усечённый буфер', () => {
+      const encoded = encodePack(pack);
+      expect(() => decodePack(encoded.subarray(0, encoded.length - 5))).toThrow(PackError);
+    });
+
+    it('отвергает заголовок без списка секций', () => {
+      expect(() => decodePack(corruptHeader((h) => delete h.sections))).toThrow(PackError);
+    });
+
+    it('отвергает секцию с завышенной длиной', () => {
+      expect(() =>
+        decodePack(
+          corruptHeader((h) => {
+            (h.sections as { length: number }[])[0]!.length = 999_999;
+          }),
+        ),
+      ).toThrow(PackError);
+    });
+
+    it('отвергает заголовок с потерянной секцией', () => {
+      expect(() =>
+        decodePack(
+          corruptHeader((h) => {
+            (h.sections as unknown[]).splice(0, 1);
+          }),
+        ),
+      ).toThrow(PackError);
+    });
+  });
 });
 ```
 
@@ -1895,6 +1952,7 @@ import {
   HEADER_OFFSET,
   MAGIC,
   PACK_VERSION,
+  SECTION_FIELDS,
   align4,
   type SectionDescriptor,
 } from './encode.js';
@@ -1934,8 +1992,34 @@ export function decodePack(input: Uint8Array): Pack {
     throw new PackError('Заголовок данных повреждён.');
   }
 
+  // Порченый заголовок от другой сборки может вообще не содержать sections —
+  // без этой проверки итерация ниже падает сырым TypeError.
+  if (!Array.isArray(header.sections)) {
+    throw new PackError('Заголовок данных повреждён: отсутствует список секций. Пересоберите визуализацию.');
+  }
+
   const dataStart = align4(HEADER_OFFSET + headerLength);
+  // Граница данных отсчитывается от dataStart на уже (при необходимости)
+  // скопированном буфере bytes, а не от исходного input.
+  const dataLength = bytes.length - dataStart;
+
   const read = (section: SectionDescriptor) => {
+    const bytesPerElement = section.kind === 'u8' ? 1 : 4;
+    const byteLength = section.length * bytesPerElement;
+    // Без этой проверки испорченная или завышенная длина секции ломает
+    // конструктор typed array сырым RangeError вместо понятного PackError.
+    // Обрыв ответа сервера выглядит именно так.
+    if (
+      typeof section.offset !== 'number' ||
+      typeof section.length !== 'number' ||
+      section.offset < 0 ||
+      byteLength < 0 ||
+      section.offset + byteLength > dataLength
+    ) {
+      throw new PackError(
+        `Заголовок данных повреждён: секция «${section.name}» выходит за границы файла. Пересоберите визуализацию.`,
+      );
+    }
     const at = bytes.byteOffset + dataStart + section.offset;
     if (section.kind === 'u8') return new Uint8Array(bytes.buffer, at, section.length);
     if (section.kind === 'i32') return new Int32Array(bytes.buffer, at, section.length);
@@ -1945,6 +2029,16 @@ export function decodePack(input: Uint8Array): Pack {
   const arrays = {} as Record<SectionDescriptor['name'], ReturnType<typeof read>>;
   for (const section of header.sections) {
     arrays[section.name] = read(section);
+  }
+
+  // Заголовок мог описывать не все обязательные секции (например, файл от
+  // более старой сборки) — без этой проверки Pack тихо уедет с undefined
+  // в одном из typed-array полей, и падение обнаружится позже и не там.
+  const missing = SECTION_FIELDS.filter((name) => !(name in arrays));
+  if (missing.length > 0) {
+    throw new PackError(
+      `Заголовок данных повреждён: отсутствуют обязательные секции (${missing.join(', ')}). Пересоберите визуализацию.`,
+    );
   }
 
   return {
@@ -1977,7 +2071,7 @@ export function decodePack(input: Uint8Array): Pack {
 - [ ] **Step 6: Запустить тесты**
 
 Run: `npx vitest run tests/pack && npm run typecheck`
-Expected: PASS, 4 теста.
+Expected: PASS, 8 тестов.
 
 - [ ] **Step 7: Коммит**
 
