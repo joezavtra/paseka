@@ -3,8 +3,14 @@
  * порядку в массиве: даты автора немонотонны после rebase и cherry-pick.
  */
 export function bucketCommits(ts: Uint32Array, buckets: number): Uint32Array {
+  // Проверка — до выделения массива: конструктор Uint32Array бросает
+  // RangeError на отрицательной длине и молча обрезает дробную, так что
+  // проверять buckets уже после `new Uint32Array(buckets)` бессмысленно —
+  // до неё просто не дойти (или она проверяет не то, что было передано).
+  if (!Number.isInteger(buckets) || buckets <= 0) return new Uint32Array(0);
+
   const counts = new Uint32Array(buckets);
-  if (ts.length === 0 || buckets <= 0) return counts;
+  if (ts.length === 0) return counts;
 
   let min = ts[0]!;
   let max = ts[0]!;

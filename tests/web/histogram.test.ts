@@ -37,4 +37,9 @@ describe('bucketCommits', () => {
     const counts = bucketCommits(ts, 4);
     expect(Math.max(...counts)).toBeGreaterThanOrEqual(5);
   });
+
+  it('не бросает на отрицательном числе корзин, а возвращает пустой массив', () => {
+    expect(() => bucketCommits(Uint32Array.from([1, 2, 3]), -1)).not.toThrow();
+    expect([...bucketCommits(Uint32Array.from([1, 2, 3]), -1)]).toEqual([]);
+  });
 });
