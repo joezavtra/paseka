@@ -2156,6 +2156,47 @@ describe('startServer', () => {
     running.push(second);
     expect(second.port).not.toBe(first.port);
   });
+
+  it('сжимает пакет один раз при параллельных запросах', async () => {
+    let calls = 0;
+    const server = await startServer({
+      webRoot: await makeWebRoot(),
+      port: 0,
+      getPack: async () => {
+        calls++;
+        await new Promise((done) => setTimeout(done, 20));
+        return new Uint8Array([1, 2, 3, 4]);
+      },
+    });
+    running.push(server);
+
+    const [a, b] = await Promise.all([
+      fetch(`${server.url}/api/pack`).then((r) => r.arrayBuffer()),
+      fetch(`${server.url}/api/pack`).then((r) => r.arrayBuffer()),
+    ]);
+    expect(calls).toBe(1);
+    expect(new Uint8Array(a!)).toEqual(new Uint8Array([1, 2, 3, 4]));
+    expect(new Uint8Array(b!)).toEqual(new Uint8Array(a!));
+  });
+
+  it('пробует снова, если сборка пакета упала', async () => {
+    let attempt = 0;
+    const server = await startServer({
+      webRoot: await makeWebRoot(),
+      port: 0,
+      getPack: async () => {
+        attempt++;
+        if (attempt === 1) throw new Error('сборка не удалась');
+        return new Uint8Array([7, 7, 7]);
+      },
+    });
+    running.push(server);
+
+    expect((await fetch(`${server.url}/api/pack`)).status).toBe(500);
+    const second = await fetch(`${server.url}/api/pack`);
+    expect(second.status).toBe(200);
+    expect(new Uint8Array(await second.arrayBuffer())).toEqual(new Uint8Array([7, 7, 7]));
+  });
 });
 ```
 
@@ -2201,7 +2242,20 @@ const MIME: Record<string, string> = {
 const PORT_ATTEMPTS = 20;
 
 export async function startServer(options: ServeOptions): Promise<RunningServer> {
-  let packGzip: Buffer | null = null;
+  // Кэшируем именно промис вычисления, а не готовый буфер: между проверкой
+  // на null и присваиванием стоит await, и без этого два параллельных запроса
+  // к /api/pack успевают оба увидеть пустой кэш и оба запустить сжатие.
+  // Если getPack() падает, промис сбрасывается — иначе кэш «залипает»
+  // в сломанном состоянии и следующий запрос никогда не попробует снова.
+  let packGzip: Promise<Buffer> | null = null;
+
+  function getPackGzip(): Promise<Buffer> {
+    packGzip ??= (async () => gzipSync(await options.getPack()))().catch((error: unknown) => {
+      packGzip = null;
+      throw error;
+    });
+    return packGzip;
+  }
 
   const server = createServer((request, response) => {
     handle(request, response).catch(() => {
@@ -2214,14 +2268,14 @@ export async function startServer(options: ServeOptions): Promise<RunningServer>
     const url = new URL(request.url ?? '/', 'http://localhost');
 
     if (url.pathname === '/api/pack') {
-      packGzip ??= gzipSync(await options.getPack());
+      const body = await getPackGzip();
       response.writeHead(200, {
         'content-type': 'application/octet-stream',
         'content-encoding': 'gzip',
         'cache-control': 'no-store',
-        'content-length': String(packGzip.length),
+        'content-length': String(body.length),
       });
-      response.end(packGzip);
+      response.end(body);
       return;
     }
 
@@ -2282,7 +2336,7 @@ function listen(server: ReturnType<typeof createServer>, wanted: number): Promis
 - [ ] **Step 4: Запустить тесты**
 
 Run: `npx vitest run tests/server && npm run typecheck`
-Expected: PASS, 3 теста.
+Expected: PASS, 5 тестов.
 
 - [ ] **Step 5: Коммит**
 
