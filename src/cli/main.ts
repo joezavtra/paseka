@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join, sep } from 'node:path';
 import { inspectRepo, RepoError } from '../git/repo.js';
 import { streamCommits } from '../git/log-stream.js';
+import { listHeadFiles } from '../git/tree.js';
 import { buildPack } from '../model/build.js';
 import type { Pack } from '../model/types.js';
 import type { RawCommit } from '../git/types.js';
@@ -115,7 +116,8 @@ export async function collectPack(
   }
   onProgress?.(commits.length);
 
-  return buildPack(commits, { repoName: info.name, head: info.head });
+  const headFiles = await listHeadFiles(info.root);
+  return buildPack(commits, { repoName: info.name, head: info.head, headFiles });
 }
 
 export function formatStats(pack: Pack): string {
