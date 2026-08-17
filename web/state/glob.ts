@@ -1,21 +1,3 @@
-/** Символы, которые в регулярном выражении значат не то, что в образце пути. */
-const SPECIAL = /[.*+?^${}()|[\]\\]/g;
-
-const cache = new Map<string, RegExp>();
-
-function toRegExp(pattern: string): RegExp {
-  const known = cache.get(pattern);
-  if (known) return known;
-  // Экранируем всё, затем возвращаем смысл только подстановкам.
-  const source = pattern
-    .replace(SPECIAL, '\\$&')
-    .replace(/\\\*/g, '.*')
-    .replace(/\\\?/g, '.');
-  const compiled = new RegExp(`^${source}$`, 'iu');
-  cache.set(pattern, compiled);
-  return compiled;
-}
-
 /**
  * Образец без подстановок — это поиск подстроки: пользователь чаще всего хочет
  * «покажи всё про utils», а не пишет якоря. Как только появляется `*` или `?`,
@@ -27,5 +9,42 @@ export function matchesGlob(path: string, pattern: string): boolean {
   if (!trimmed.includes('*') && !trimmed.includes('?')) {
     return path.toLowerCase().includes(trimmed.toLowerCase());
   }
-  return toRegExp(trimmed).test(path);
+  return matchWildcard(path.toLowerCase(), trimmed.toLowerCase());
+}
+
+/**
+ * Сопоставление с `*`/`?` двумя указателями вместо регулярного выражения.
+ * Регэксп с обратным отслеживанием на образце вида `a*a*a*…*b` уходит в
+ * экспоненциальное время на несовпадающей строке, а на очень длинном образце
+ * вообще не компилируется. Этот алгоритм линеен по построению: на звёздочке
+ * запоминаем её позицию и место в строке, при несовпадении откатываемся к
+ * последней звёздочке и сдвигаем запомненное место на один символ.
+ */
+function matchWildcard(path: string, pattern: string): boolean {
+  let pathIdx = 0;
+  let patternIdx = 0;
+  let starPatternIdx = -1;
+  let starPathIdx = -1;
+
+  while (pathIdx < path.length) {
+    if (patternIdx < pattern.length && (pattern[patternIdx] === '?' || pattern[patternIdx] === path[pathIdx])) {
+      pathIdx++;
+      patternIdx++;
+    } else if (patternIdx < pattern.length && pattern[patternIdx] === '*') {
+      starPatternIdx = patternIdx;
+      starPathIdx = pathIdx;
+      patternIdx++;
+    } else if (starPatternIdx !== -1) {
+      patternIdx = starPatternIdx + 1;
+      starPathIdx++;
+      pathIdx = starPathIdx;
+    } else {
+      return false;
+    }
+  }
+
+  while (patternIdx < pattern.length && pattern[patternIdx] === '*') {
+    patternIdx++;
+  }
+  return patternIdx === pattern.length;
 }
