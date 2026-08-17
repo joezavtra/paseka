@@ -1,4 +1,5 @@
 import { realpathSync } from 'node:fs';
+import { access } from 'node:fs/promises';
 import { parseArgs as parseNodeArgs } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, sep } from 'node:path';
@@ -106,17 +107,34 @@ function resolveWebRoot(): string {
     : join(here, '..', '..', 'dist', 'web');
 }
 
+/** Проверяет, что web-бандл собран, прежде чем поднимать сервер и открывать вкладку. */
+async function hasWebBundle(webRoot: string): Promise<boolean> {
+  try {
+    await access(join(webRoot, 'index.html'));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function run(argv: string[]): Promise<number> {
   const options = parseArgs(argv);
   if (options.help) {
     process.stdout.write(USAGE);
     return 0;
   }
-  try {
-    const packPromise = collectPack(options.repoPath, (n) => {
-      process.stderr.write(`\rпрочитано коммитов: ${n}`);
-    });
 
+  const packPromise = collectPack(options.repoPath, (n) => {
+    process.stderr.write(`\rпрочитано коммитов: ${n}`);
+  });
+  // packPromise создаётся раньше, чем на него где-либо подписываются: сервер
+  // стартует до того, как pack готов, чтобы вкладка открывалась сразу. Если
+  // промис отклонится в этом промежутке — до `await packPromise` ниже, — node
+  // расценит отклонение как необработанное и уронит процесс. Гасим это здесь;
+  // настоящая обработка ошибки всё равно происходит через `await` дальше.
+  packPromise.catch(() => {});
+
+  try {
     if (options.stats) {
       const pack = await packPromise;
       process.stderr.write('\r\x1b[K');
@@ -124,25 +142,39 @@ export async function run(argv: string[]): Promise<number> {
       return 0;
     }
 
+    const webRoot = resolveWebRoot();
+    if (!(await hasWebBundle(webRoot))) {
+      process.stderr.write(
+        `\r\x1b[KВеб-часть не собрана: не найден ${join(webRoot, 'index.html')}.\n` +
+          'Выполните `npm run build:web` (или `npm run build`) и запустите снова.\n',
+      );
+      return 1;
+    }
+
     const server = await startServer({
-      webRoot: resolveWebRoot(),
+      webRoot,
       port: options.port,
       getPack: async () => encodePack(await packPromise),
     });
 
-    const pack = await packPromise;
-    process.stderr.write('\r\x1b[K');
-    process.stdout.write(`${formatStats(pack)}\n\n${server.url}\nОстановить: Ctrl+C\n`);
-    if (options.open) openBrowser(server.url);
+    // Сервер поднят и держит цикл событий живым — при любом исходе ниже
+    // (ошибка чтения репозитория, нормальная остановка) обязаны его закрыть,
+    // иначе процесс зависнет и не отдаст управление даже после вывода ошибки.
+    try {
+      const pack = await packPromise;
+      process.stderr.write('\r\x1b[K');
+      process.stdout.write(`${formatStats(pack)}\n\n${server.url}\nОстановить: Ctrl+C\n`);
+      if (options.open) openBrowser(server.url);
 
-    await new Promise<void>((done) => {
-      const stop = () => {
-        void server.close().then(done);
-      };
-      process.once('SIGINT', stop);
-      process.once('SIGTERM', stop);
-    });
-    return 0;
+      await new Promise<void>((done) => {
+        const stop = () => done();
+        process.once('SIGINT', stop);
+        process.once('SIGTERM', stop);
+      });
+      return 0;
+    } finally {
+      await server.close();
+    }
   } catch (error) {
     if (error instanceof RepoError) {
       process.stderr.write(`\r\x1b[K${error.message}\n`);
