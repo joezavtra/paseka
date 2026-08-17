@@ -55,6 +55,40 @@ describe('parseRecord', () => {
   it('отбрасывает запись с недостающими полями', () => {
     expect(parseRecord(`ccc333${FS}Zoe`)).toBeNull();
   });
+
+  it('разбирает путь с пробелом целиком', () => {
+    const record = [
+      `ddd444${FS}Ева${FS}eva@example.com${FS}1700000300${FS}пробел в пути`,
+      ':000000 100644 0000000 aaaaaaa A\tfile with space.txt',
+      '3\t0\tfile with space.txt',
+    ].join('\n');
+    const c = parseRecord(record)!;
+    expect(c.changes).toEqual([
+      { path: 'file with space.txt', kind: 'add', added: 3, deleted: 0, binary: false },
+    ]);
+  });
+
+  it('игнорирует строку без табов в теле записи, не теряя остальные файлы', () => {
+    const record = [
+      `eee555${FS}Ева${FS}eva@example.com${FS}1700000400${FS}мусорная строка`,
+      ':000000 100644 0000000 aaaaaaa A\ta.txt',
+      'мусорная строка без табов',
+      '2\t0\ta.txt',
+    ].join('\n');
+    const c = parseRecord(record)!;
+    expect(c.changes).toEqual([{ path: 'a.txt', kind: 'add', added: 2, deleted: 0, binary: false }]);
+  });
+
+  it('добавляет файл из numstat-строки без парного raw-блока с kind=modify', () => {
+    const record = [
+      `fff666${FS}Ева${FS}eva@example.com${FS}1700000500${FS}осиротевший numstat`,
+      '5\t2\torphan.txt',
+    ].join('\n');
+    const c = parseRecord(record)!;
+    expect(c.changes).toEqual([
+      { path: 'orphan.txt', kind: 'modify', added: 5, deleted: 2, binary: false },
+    ]);
+  });
 });
 
 describe('CommitParser', () => {
