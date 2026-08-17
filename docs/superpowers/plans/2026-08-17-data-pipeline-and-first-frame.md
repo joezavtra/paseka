@@ -450,7 +450,7 @@ git commit -m "feat(git): streaming parser for git log --raw --numstat"
 
 ```ts
 import { execFile } from 'node:child_process';
-import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, realpath, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
@@ -467,9 +467,14 @@ export interface FixtureCommit {
 
 const created: string[] = [];
 
-/** Создаёт временный репозиторий с заданной историей. Время коммитов детерминировано. */
+/**
+ * Создаёт временный репозиторий с заданной историей. Время коммитов детерминировано.
+ * Путь канонизируется: на macOS `/var` и `/tmp` — симлинки в `/private`, mkdtemp
+ * возвращает путь со ссылкой, а `git rev-parse --show-toplevel` — всегда настоящий.
+ * Без realpath сравнение корня репозитория со строкой из git никогда не сойдётся.
+ */
 export async function makeRepo(commits: FixtureCommit[]): Promise<string> {
-  const root = await mkdtemp(join(tmpdir(), 'gource-reborn-'));
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'gource-reborn-')));
   created.push(root);
   const git = (args: string[], env: NodeJS.ProcessEnv = {}) =>
     run('git', args, { cwd: root, env: { ...process.env, ...env } });
