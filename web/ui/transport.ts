@@ -12,6 +12,8 @@ export interface TransportOptions {
 export interface TransportHandles {
   setCursor(index: number, label: string): void;
   setPlaying(playing: boolean): void;
+  /** Снимает глобальные обработчики (resize, keydown) и очищает корневой элемент. */
+  unmount(): void;
 }
 
 const SPEEDS = [0.5, 1, 2, 4, 8];
@@ -27,18 +29,36 @@ export function formatCommitLabel(pack: Pack, index: number): string {
   return subject.length > 0 ? `${date} · ${hash} · ${subject}` : `${date} · ${hash}`;
 }
 
+/**
+ * Есть ли у пробела на этом элементе собственное поведение (открыть список,
+ * вставить символ, переключиться в редактируемой области) — тогда глобальную
+ * горячую клавишу воспроизведения нужно пропустить и отдать пробел элементу.
+ */
+function ownsSpaceKey(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  const tag = target.tagName;
+  if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return true;
+  return target.isContentEditable;
+}
+
 export function mountTransport(root: HTMLElement, options: TransportOptions): TransportHandles {
   root.hidden = false;
   root.replaceChildren();
 
+  const playLabel = (playing: boolean): string => (playing ? 'Пауза (пробел)' : 'Воспроизвести (пробел)');
+
   const playButton = document.createElement('button');
   playButton.type = 'button';
   playButton.textContent = '▶';
-  playButton.title = 'Воспроизвести (пробел)';
+  playButton.title = playLabel(false);
+  // Текст кнопки — юникодный значок, скринридер не должен озвучивать его как
+  // текст: явное доступное имя держим в паре с заголовком и обновляем вместе.
+  playButton.setAttribute('aria-label', playLabel(false));
   playButton.addEventListener('click', () => options.onTogglePlay());
 
   const speed = document.createElement('select');
   speed.title = 'Скорость: коммитов в секунду';
+  speed.setAttribute('aria-label', 'Скорость: коммитов в секунду');
   for (const value of SPEEDS) {
     const option = document.createElement('option');
     option.value = String(value);
@@ -59,6 +79,7 @@ export function mountTransport(root: HTMLElement, options: TransportOptions): Tr
   slider.step = '1';
   slider.value = String(Math.max(-1, options.commitCount - 1));
   slider.title = 'Перемотка по коммитам';
+  slider.setAttribute('aria-label', 'Перемотка по коммитам');
   slider.addEventListener('input', () => options.onSeek(Number(slider.value)));
   track.append(histogram, slider);
 
@@ -68,16 +89,17 @@ export function mountTransport(root: HTMLElement, options: TransportOptions): Tr
   root.append(playButton, speed, track, label);
 
   // Гистограмма рисуется после вставки в документ: до этого у канвы нет размера.
-  const redraw = () => drawHistogram(histogram, bucketCommits(options.commitTs, 120));
+  const redraw = (): void => drawHistogram(histogram, bucketCommits(options.commitTs, 120));
   redraw();
   window.addEventListener('resize', redraw);
 
-  document.addEventListener('keydown', (event: KeyboardEvent) => {
+  const handleKeydown = (event: KeyboardEvent): void => {
     if (event.code !== 'Space') return;
-    if (event.target instanceof HTMLElement && event.target.tagName === 'INPUT') return;
+    if (ownsSpaceKey(event.target)) return;
     event.preventDefault();
     options.onTogglePlay();
-  });
+  };
+  document.addEventListener('keydown', handleKeydown);
 
   return {
     setCursor(index: number, text: string): void {
@@ -86,7 +108,14 @@ export function mountTransport(root: HTMLElement, options: TransportOptions): Tr
     },
     setPlaying(playing: boolean): void {
       playButton.textContent = playing ? '❚❚' : '▶';
-      playButton.title = playing ? 'Пауза (пробел)' : 'Воспроизвести (пробел)';
+      const title = playLabel(playing);
+      playButton.title = title;
+      playButton.setAttribute('aria-label', title);
+    },
+    unmount(): void {
+      window.removeEventListener('resize', redraw);
+      document.removeEventListener('keydown', handleKeydown);
+      root.replaceChildren();
     },
   };
 }
