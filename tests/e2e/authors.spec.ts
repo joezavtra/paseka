@@ -49,14 +49,22 @@ test('во время воспроизведения появляются авт
     .toBe(0);
 
   await page.locator('#track input').fill('-1');
-  await page.locator('#transport button').click();
+  const playButton = page.locator('#transport button');
+  await playButton.click();
 
   await expect
     .poll(async () => authorCount(await page.locator('#status').textContent()), { timeout: 20_000 })
     .toBeGreaterThan(0);
 
+  // Доступное имя кнопки меняется вместе с состоянием воспроизведения. Ждём,
+  // что оно действительно «Пауза», прежде чем нажимать: пять коммитов на
+  // скорости по умолчанию проигрываются за пару секунд и сами останавливаются
+  // в конце истории — слепой клик мог бы попасть по уже отыгранной кнопке
+  // «Воспроизвести» и вместо паузы запустить показ заново с начала.
+  await expect(playButton).toHaveAttribute('aria-label', 'Пауза (пробел)');
+  await playButton.click();
+
   // Пауза и ожидание дольше жизни луча — авторы обязаны погаснуть сами.
-  await page.locator('#transport button').click();
   await expect
     .poll(async () => authorCount(await page.locator('#status').textContent()), { timeout: 10_000 })
     .toBe(0);

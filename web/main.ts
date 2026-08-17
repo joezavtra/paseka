@@ -152,6 +152,10 @@ async function start(): Promise<void> {
       radiusValues.push(next);
     };
     if (full) {
+      // Перемотка обязана погасить чужую активность: без этого буфер держал
+      // бы лучи прежнего момента, нацеленные на пути, которые в новой позиции
+      // либо мертвы, либо принадлежат совсем другому коммиту.
+      recent.clear();
       for (let path = 0; path < pathCount; path++) {
         if (scene.active[path] === 1) remember(path);
       }
@@ -298,9 +302,16 @@ async function start(): Promise<void> {
       });
 
       const targets: ActorTarget[] = [];
+      // Счётчик авторов в статусе обязан совпадать с тем, кто реально виден:
+      // отдельный проход по буферу (recent.activeAuthors) считал бы и тех, чьи
+      // события ссылаются на уже мёртвые пути — например, коммит, который
+      // только удаляет файлы, не даёт ни цели, ни значка, но буфер о нём
+      // всё равно помнит. centroidHits уже отфильтрован по scene.active выше.
+      let visibleAuthors = 0;
       for (let author = 0; author < authorCount; author++) {
         const count = centroidHits[author]!;
         if (count === 0) continue;
+        visibleAuthors++;
         targets.push({ author, x: centroidX[author]! / count, y: centroidY[author]! / count });
       }
       actorField.update(dt, targets);
@@ -312,9 +323,8 @@ async function start(): Promise<void> {
         beams.fromY[i] = actorField.positions[author * 2 + 1]!;
       }
 
-      const authorsNow = recent.activeAuthors(nowMs);
-      if (authorsNow !== shownAuthors) {
-        shownAuthors = authorsNow;
+      if (visibleAuthors !== shownAuthors) {
+        shownAuthors = visibleAuthors;
         renderStatus();
       }
 

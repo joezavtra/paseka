@@ -25,7 +25,7 @@ export function initialsFor(name: string, email: string): string {
 }
 
 /** На сколько градусов оттенок значка обязан отстоять от любого оттенка палитры узлов. */
-const HUE_MARGIN = 20;
+export const HUE_MARGIN = 20;
 
 /** Оттенок цвета из #rrggbb в градусах; null для серого без выраженного оттенка. */
 function hexHue(hex: string): number | null {
@@ -47,21 +47,37 @@ function hueDistance(a: number, b: number): number {
 }
 
 /**
- * Оттенки значка ограничены полосами, которые держатся не ближе HUE_MARGIN
- * градусов от любого оттенка палитры узлов (PALETTE, render/scene.ts).
- * Полосы считаются один раз при загрузке модуля от актуальной палитры, а не
- * прописаны числами: захардкоженный список тихо разошёлся бы с палитрой при
- * первой же правке PALETTE, и значок снова сливался бы с узлом — то есть
- * повторил бы баг, который эта проверка устраняет.
+ * Оттенки, которые держатся не ближе marginDeg градусов от каждого оттенка
+ * palette. Принимает палитру параметром, а не читает PALETTE напрямую: так
+ * вырожденный случай (палитра плотнее отступа) проверяется тестом напрямую,
+ * без подмены модуля.
+ *
+ * Если такого оттенка не осталось — палитру сделали настолько плотной, что
+ * HUE_MARGIN нечем удовлетворить, — молчать нельзя: остаток от деления на
+ * пустой список дал бы NaN, `hsl(NaN ...)` был бы для canvas негодной кистью,
+ * и он молча оставил бы значок цветом предыдущей отрисовки. Вместо этого явно
+ * откатываемся к полному кругу оттенков и громко предупреждаем в консоль —
+ * значки при этом смогут совпасть с палитрой узлов, но хотя бы не станут
+ * неопределённым поведением.
  */
-const SAFE_HUES: readonly number[] = (() => {
-  const paletteHues = PALETTE.map(hexHue).filter((h): h is number => h !== null);
+export function computeSafeHues(palette: readonly string[], marginDeg: number): number[] {
+  const paletteHues = palette.map(hexHue).filter((h): h is number => h !== null);
   const safe: number[] = [];
   for (let deg = 0; deg < 360; deg++) {
-    if (paletteHues.every((h) => hueDistance(deg, h) >= HUE_MARGIN)) safe.push(deg);
+    if (paletteHues.every((h) => hueDistance(deg, h) >= marginDeg)) safe.push(deg);
   }
-  return safe;
-})();
+  if (safe.length > 0) return safe;
+
+  console.warn(
+    `avatarColor: палитра узлов не оставила ни одного оттенка с отступом ${marginDeg}° — ` +
+      'значки откатываются на полный круг оттенков и могут совпасть с палитрой узлов.',
+  );
+  const fallback: number[] = [];
+  for (let deg = 0; deg < 360; deg++) fallback.push(deg);
+  return fallback;
+}
+
+const SAFE_HUES: readonly number[] = computeSafeHues(PALETTE, HUE_MARGIN);
 
 /**
  * Цвет значка выводится из почты, а не из имени: один человек пишет имя
