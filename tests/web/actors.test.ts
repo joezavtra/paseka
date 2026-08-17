@@ -51,6 +51,21 @@ describe('ActorField', () => {
     expect(field.positions[2]).toBeCloseTo(30, 3);
   });
 
+  it('не швыряет вернувшегося автора остаточным импульсом', () => {
+    const field = new ActorField(2);
+    field.update(1 / 60, [at(0, 0, 0)]);
+    // Разгоняем автора к далёкой цели, чтобы накопить заметную скорость.
+    run(field, [at(0, 1000, 0)], 60);
+    const x = field.positions[0]!;
+    const y = field.positions[1]!;
+    // Гасим на несколько кадров: автор пропал из целей, скорость не должна копиться.
+    run(field, [], 10);
+    // Возвращаем ровно в текущую позицию — сила пружины нулевая.
+    field.update(1 / 60, [at(0, x, y)]);
+    const jump = Math.hypot(field.positions[0]! - x, field.positions[1]! - y);
+    expect(jump).toBeLessThan(1);
+  });
+
   it('переживает пустой список целей', () => {
     const field = new ActorField(2);
     field.update(1 / 60, []);

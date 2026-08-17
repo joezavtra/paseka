@@ -92,7 +92,14 @@ export class ActorField {
 
     const damping = Math.max(0, 1 - DAMPING * dt);
     for (let author = 0; author < this.active.length; author++) {
-      if (this.active[author] === 0) continue;
+      if (this.active[author] === 0) {
+        // Неактивный автор не копит импульс: скорость гасим сразу, иначе
+        // при возвращении он выпрыгнет остатком старой скорости, хотя
+        // позиция (и цель, если она не сдвинулась) осталась той же.
+        this.velocity[author * 2] = 0;
+        this.velocity[author * 2 + 1] = 0;
+        continue;
+      }
       this.velocity[author * 2] *= damping;
       this.velocity[author * 2 + 1] *= damping;
       this.positions[author * 2] += this.velocity[author * 2] * dt;
