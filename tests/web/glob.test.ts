@@ -67,4 +67,19 @@ describe('matchesGlob', () => {
     expect(matchesGlob('Файл/Утилиты.ts', 'утилиты')).toBe(true);
     expect(matchesGlob('Файл/Утилиты.ts', 'ФАЙЛ/*.ts')).toBe(true);
   });
+
+  it('буквальная звёздочка в пути не мешает звёздочке образца', () => {
+    expect(matchesGlob('*b', '*')).toBe(true);
+    expect(matchesGlob('?x', '*')).toBe(true);
+  });
+
+  it('вопрос в образце не путает буквальную звёздочку в пути', () => {
+    expect(matchesGlob('*x', '?x')).toBe(true);
+  });
+
+  it('найденные фаззером расхождения с эталонным перебором', () => {
+    expect(matchesGlob('c*bc*bba', '?*')).toBe(true);
+    expect(matchesGlob('a*caaa?', '?*??')).toBe(true);
+    expect(matchesGlob('**b??*?', '*')).toBe(true);
+  });
 });

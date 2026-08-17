@@ -27,12 +27,15 @@ function matchWildcard(path: string, pattern: string): boolean {
   let starPathIdx = -1;
 
   while (pathIdx < path.length) {
-    if (patternIdx < pattern.length && (pattern[patternIdx] === '?' || pattern[patternIdx] === path[pathIdx])) {
-      pathIdx++;
-      patternIdx++;
-    } else if (patternIdx < pattern.length && pattern[patternIdx] === '*') {
+    // Звёздочку образца проверяем раньше совпадения символов: если в самом пути
+    // встретилась буквальная `*`, она не должна «съесть» звёздочку образца как
+    // обычный литерал и лишить нас точки отката.
+    if (patternIdx < pattern.length && pattern[patternIdx] === '*') {
       starPatternIdx = patternIdx;
       starPathIdx = pathIdx;
+      patternIdx++;
+    } else if (patternIdx < pattern.length && (pattern[patternIdx] === '?' || pattern[patternIdx] === path[pathIdx])) {
+      pathIdx++;
       patternIdx++;
     } else if (starPatternIdx !== -1) {
       patternIdx = starPatternIdx + 1;
