@@ -1,9 +1,15 @@
 import type { Pack } from '../../src/model/types.js';
-import { bucketCommits, drawHistogram } from './histogram.js';
+import { bucketActivity, bucketCountForWidth, drawHistogram } from './histogram.js';
 
 export interface TransportOptions {
   commitCount: number;
-  commitTs: Uint32Array;
+  /**
+   * CSR-смещения событий по коммитам (`Pack.commitEventStart`): из них
+   * гистограмма считает объём изменений в диапазоне индексов корзины.
+   * Времён коммитов здесь нет намеренно — дорожка живёт в оси слайдера,
+   * то есть в индексах, а не в датах.
+   */
+  commitEventStart: Uint32Array;
   onSeek(index: number): void;
   onTogglePlay(): void;
   onSpeedChange(speed: number): void;
@@ -89,7 +95,13 @@ export function mountTransport(root: HTMLElement, options: TransportOptions): Tr
   root.append(playButton, speed, track, label);
 
   // Гистограмма рисуется после вставки в документ: до этого у канвы нет размера.
-  const redraw = (): void => drawHistogram(histogram, bucketCommits(options.commitTs, 120));
+  // Число корзин пересчитывается на каждую перерисовку, потому что зависит от
+  // фактической ширины дорожки, а она меняется вместе с шириной окна.
+  const redraw = (): void =>
+    drawHistogram(
+      histogram,
+      bucketActivity(options.commitEventStart, bucketCountForWidth(histogram.clientWidth)),
+    );
   redraw();
   window.addEventListener('resize', redraw);
 

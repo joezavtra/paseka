@@ -7,6 +7,14 @@ export class Camera {
   x = 0;
   y = 0;
 
+  /**
+   * Взял ли пользователь камеру в свои руки (колесо или перетаскивание).
+   * Пока false, вписывание идёт автоматически; после первого вмешательства —
+   * никогда, иначе камера отбирала бы управление на следующем же сообщении
+   * раскладки.
+   */
+  private userControlled = false;
+
   toScreen(wx: number, wy: number): [number, number] {
     return [wx * this.scale + this.x, wy * this.scale + this.y];
   }
@@ -83,6 +91,28 @@ export class Camera {
     return true;
   }
 
+  /** Помечает камеру как управляемую вручную: автовписывание больше не работает. */
+  takeManualControl(): void {
+    this.userControlled = true;
+  }
+
+  /**
+   * Автоматическое вписывание живых узлов. Зовётся на каждом сообщении
+   * раскладки, поэтому камера следует за деревом, пока то расходится: узел
+   * рождается рядом с родителем, и первые кадры — плотный комок в сотню
+   * единиц, а не готовое облако. Однократное вписывание на первом же остывшем
+   * сообщении оставляло бы дерево обрезанным в углу.
+   *
+   * Само вписывание прекращается естественно: воркер шлёт позиции, только
+   * пока симуляция идёт, и замолкает, когда раскладка успокоилась.
+   * Возвращает false, если вписывать было нечего или камерой уже управляет
+   * пользователь.
+   */
+  autoFit(positions: Float32Array, active: Uint8Array, width: number, height: number): boolean {
+    if (this.userControlled) return false;
+    return this.fitActive(positions, active, width, height);
+  }
+
   /** Вешает колесо и перетаскивание. Возвращает функцию отписки. */
   attach(canvas: HTMLCanvasElement): () => void {
     let dragging = false;
@@ -91,6 +121,10 @@ export class Camera {
 
     const onWheel = (event: WheelEvent) => {
       event.preventDefault();
+      // Любой жест камерой — это заявка пользователя на управление: дальше
+      // автовписывание молчит, иначе оно вернуло бы масштаб на следующем же
+      // сообщении раскладки.
+      this.takeManualControl();
       this.zoomAt(event.offsetX, event.offsetY, Math.exp(-event.deltaY * 0.002));
     };
     const onDown = (event: PointerEvent) => {
@@ -101,6 +135,9 @@ export class Camera {
     };
     const onMove = (event: PointerEvent) => {
       if (!dragging) return;
+      // Отмечаем именно перетаскивание, а не нажатие: одиночный клик по узлу
+      // (инспектор в срезе 5) не должен отбирать камеру у автовписывания.
+      this.takeManualControl();
       this.panBy(event.offsetX - lastX, event.offsetY - lastY);
       lastX = event.offsetX;
       lastY = event.offsetY;

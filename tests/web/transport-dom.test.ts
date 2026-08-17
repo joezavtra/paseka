@@ -31,7 +31,7 @@ function makeOptions(overrides: Partial<TransportOptions> = {}): TransportOption
     seeks,
     speeds,
     commitCount: 5,
-    commitTs: Uint32Array.from([1, 2, 3, 4, 5]),
+    commitEventStart: Uint32Array.from([0, 1, 2, 3, 4, 5]),
     onSeek: (index: number) => seeks.push(index),
     onTogglePlay: () => {
       state.toggleCount++;
@@ -65,7 +65,7 @@ describe('mountTransport — слайдер', () => {
 
   it('при пустой истории слайдер стоит в положении "до начала истории"', () => {
     const { slider } = mount(
-      makeOptions({ commitCount: 0, commitTs: new Uint32Array(0) }),
+      makeOptions({ commitCount: 0, commitEventStart: Uint32Array.from([0]) }),
     );
     expect(slider.min).toBe('-1');
     expect(slider.max).toBe('-1');

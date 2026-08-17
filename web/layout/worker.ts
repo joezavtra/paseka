@@ -38,7 +38,7 @@ self.onmessage = (event: MessageEvent<ToWorker>) => {
 
   if (!store) return; // 'update' до 'init' — воркер ещё не готов, сообщение отбрасываем
 
-  const { nodes } = store.applyUpdate({
+  const nodes = store.applyUpdate({
     active: message.active,
     added: message.added,
     radiusIds: message.radiusIds,

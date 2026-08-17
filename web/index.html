@@ -9,10 +9,21 @@
       html, body { margin: 0; height: 100%; background: #0b0d12; color: #c9d1d9;
         font: 13px/1.5 ui-sans-serif, system-ui, sans-serif; overflow: hidden; }
       #scene { display: block; width: 100vw; height: 100vh; }
-      /* pointer-events: none — это чисто информационная строка: она лежит в
-         том же углу, что и панель транспорта, и не должна перехватывать клики
-         по кнопке воспроизведения под собой. */
-      #status { position: fixed; left: 12px; bottom: 12px; padding: 6px 10px;
+      /* Строка состояния и панель транспорта живут в одной колонке, прижатой
+         к низу экрана, а не позиционируются каждая сама по себе: раньше оба
+         блока были прибиты к левому нижнему углу и текст ложился поверх
+         кнопки воспроизведения и списка скорости. Колонка разводит их по
+         вертикали при любой ширине окна и при любой длине текста.
+         pointer-events: none на самой колонке — чтобы её пустые промежутки не
+         отбирали у холста перетаскивание камеры; детям право на клик
+         возвращается явно. */
+      #hud { position: fixed; left: 12px; right: 12px; bottom: 12px;
+        display: flex; flex-direction: column; align-items: flex-start; gap: 8px;
+        pointer-events: none; }
+      #hud > * { pointer-events: auto; }
+      /* pointer-events: none у строки состояния безвреден и оставлен: это
+         чисто информационный текст, перехватывать указатель ему незачем. */
+      #status { max-width: 100%; box-sizing: border-box; padding: 6px 10px;
         background: #161b22cc; border: 1px solid #30363d; border-radius: 6px;
         pointer-events: none; }
       #status[hidden] { display: none; }
@@ -20,7 +31,7 @@
         background: #3d1418; border: 1px solid #ff7b72; border-radius: 6px;
         color: #ff7b72; max-width: 60ch; }
       #fatal[hidden] { display: none; }
-      #transport { position: fixed; left: 12px; right: 12px; bottom: 12px;
+      #transport { align-self: stretch; box-sizing: border-box;
         display: flex; align-items: center; gap: 10px; padding: 8px 12px;
         background: #161b22e6; border: 1px solid #30363d; border-radius: 8px; }
       #transport button { min-width: 34px; padding: 4px 8px; cursor: pointer;
@@ -28,17 +39,22 @@
         border-radius: 5px; font: inherit; }
       #transport select { background: #21262d; color: #c9d1d9; font: inherit;
         border: 1px solid #30363d; border-radius: 5px; padding: 4px; }
-      #track { position: relative; flex: 1; height: 28px; }
+      /* Дорожке отдаётся минимум ширины, а подпись под курсором ужимается:
+         иначе на узком окне подпись в 34ch съедала всю строку и слайдер
+         вырождался в несколько пикселей. */
+      #track { position: relative; flex: 1 1 auto; min-width: 140px; height: 28px; }
       #histogram { position: absolute; inset: 0; width: 100%; height: 100%; }
       #track input { position: absolute; inset: 0; width: 100%; margin: 0; }
-      #cursor-label { min-width: 34ch; color: #8b949e; white-space: nowrap;
-        overflow: hidden; text-overflow: ellipsis; }
+      #cursor-label { flex: 0 1 auto; min-width: 0; color: #8b949e;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     </style>
   </head>
   <body>
     <canvas id="scene"></canvas>
-    <div id="transport" hidden></div>
-    <div id="status">Читаю историю репозитория…</div>
+    <div id="hud">
+      <div id="status">Читаю историю репозитория…</div>
+      <div id="transport" hidden></div>
+    </div>
     <div id="fatal" hidden></div>
     <script type="module" src="./main.ts"></script>
   </body>

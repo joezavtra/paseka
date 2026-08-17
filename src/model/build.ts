@@ -1,7 +1,7 @@
 import type { RawCommit } from '../git/types.js';
 import { KIND_ADD, KIND_DELETE, KIND_MODIFY, buildPathHistory } from './history.js';
 import { PathTable } from './path-table.js';
-import { FLAG_BINARY, type Author, type Pack } from './types.js';
+import { FLAG_BINARY, FLAG_SYNTHETIC, type Author, type Pack } from './types.js';
 
 export interface BuildOptions {
   repoName: string;
@@ -87,6 +87,9 @@ export function buildPack(commits: RawCommit[], opts: BuildOptions): Pack {
   // Сверка с деревом HEAD. При `--no-merges` удаление, записанное только
   // в коммите слияния, теряется, и путь остаётся живым навсегда. Дописываем
   // удаление последним коммитом — иначе HEAD показывает файлы, которых нет.
+  // Такие события помечаются FLAG_SYNTHETIC: автор последнего коммита этих
+  // файлов не трогал, и потребителям «затронутых путей» (лучи и вспышки
+  // среза 4) нужно уметь отличить их от настоящих удалений.
   if (opts.headFiles && commits.length > 0) {
     const lastCommit = commits.length - 1;
     for (const pathId of liveOwn) {
@@ -96,7 +99,7 @@ export function buildPack(commits: RawCommit[], opts: BuildOptions): Pack {
       eventKind.push(KIND_DELETE);
       eventAdded.push(0);
       eventDeleted.push(0);
-      eventFlags.push(0);
+      eventFlags.push(FLAG_SYNTHETIC);
     }
     commitEventStart[commitEventStart.length - 1] = eventPath.length;
   }

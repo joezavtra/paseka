@@ -19,13 +19,6 @@ export interface StoreUpdate {
   radiusValues: Float32Array;
 }
 
-export interface StoreState {
-  /** Живые узлы в порядке возрастания идентификатора пути. */
-  nodes: StoreNode[];
-  /** Пары x, y длиной pathCount * 2, индекс пары — идентификатор пути. */
-  positions: Float32Array;
-}
-
 const DEFAULT_RADIUS = 3;
 
 /**
@@ -106,11 +99,17 @@ export class NodeStore {
   /**
    * Применяет разницу: заменяет маску живости на присланную, рождает новые
    * узлы (и недостающих живых предков — рекурсивно), обновляет радиусы.
-   * Возвращает живые узлы (те же объекты, что уйдут в d3-force и будут им
-   * мутироваться) и снимок позиций для первого кадра после обновления.
+   * Возвращает живые узлы — те же объекты, что уйдут в d3-force и будут им
+   * мутироваться. Позиций здесь нет намеренно: вызывающий всё равно снимает
+   * их сам при отправке, и собирать массив, который тут же выбрасывают, —
+   * лишнее выделение памяти на горячем пути.
    */
-  applyUpdate(update: StoreUpdate): StoreState {
-    this.active = update.active;
+  applyUpdate(update: StoreUpdate): StoreNode[] {
+    // Копия, а не ссылка: маска — чужой буфер, и вызывающий вправе
+    // переиспользовать его под следующий кадр (в срезе 5 маска станет
+    // пересечением живости и видимости и, скорее всего, будет собираться
+    // именно так). Хранилище с псевдонимом молча видело бы чужие правки.
+    this.active = update.active.slice();
 
     for (const id of update.added) {
       if (this.active[id] === 1) this.spawn(id);
@@ -128,6 +127,6 @@ export class NodeStore {
       if (node) nodes.push(node);
     }
 
-    return { nodes, positions: this.positions() };
+    return nodes;
   }
 }

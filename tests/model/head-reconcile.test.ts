@@ -7,8 +7,19 @@ import { promisify } from 'node:util';
 import { buildPack } from '../../src/model/build.js';
 import { listHeadFiles } from '../../src/git/tree.js';
 import { streamCommits } from '../../src/git/log-stream.js';
-import { ALIVE } from '../../src/model/history.js';
+import { ALIVE, KIND_DELETE } from '../../src/model/history.js';
+import { FLAG_SYNTHETIC } from '../../src/model/types.js';
+import type { Pack } from '../../src/model/types.js';
 import type { RawCommit } from '../../src/git/types.js';
+
+/** Индексы всех событий удаления заданного пути. */
+function deletionsOf(pack: Pack, pathId: number): number[] {
+  const out: number[] = [];
+  for (let e = 0; e < pack.eventPath.length; e++) {
+    if (pack.eventPath[e] === pathId && pack.eventKind[e] === KIND_DELETE) out.push(e);
+  }
+  return out;
+}
 
 const run = promisify(execFile);
 const dirs: string[] = [];
@@ -101,6 +112,28 @@ describe('сверка с деревом HEAD', () => {
     const a = pack.paths.indexOf('a.txt');
     const aLast = pack.lifetimeStart[a + 1] - 1;
     expect(pack.lifetimeDeath[aLast]).toBe(ALIVE);
+  });
+
+  it('событие сверки помечено синтетическим, обычное удаление — нет', async () => {
+    // В срезе 4 по затронутым путям пойдут лучи от авторов: без пометки
+    // последний коммит выстрелил бы лучами по всем похороненным сверкой
+    // файлам, которых его автор не касался.
+    const root = await makeDivergentRepo();
+    const pack = buildPack(await collect(root), {
+      repoName: 'demo',
+      head: 'head',
+      headFiles: await listHeadFiles(root),
+    });
+
+    const b = pack.paths.indexOf('b.txt');
+    const deletions = deletionsOf(pack, b);
+    expect(deletions.length).toBe(2); // настоящее удаление на main и сверка с HEAD
+
+    const synthetic = deletions[deletions.length - 1]!;
+    const real = deletions[0]!;
+    expect(pack.eventCommit[synthetic]).toBe(pack.meta.commitCount - 1);
+    expect(pack.eventFlags[synthetic] & FLAG_SYNTHETIC).toBe(FLAG_SYNTHETIC);
+    expect(pack.eventFlags[real] & FLAG_SYNTHETIC).toBe(0);
   });
 
   it('пустая история не ломается сверкой', () => {

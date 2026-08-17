@@ -3,12 +3,10 @@ import { TimeEngine, type TimeDelta } from './time/engine.js';
 import { buildActiveLinks, radiusFor } from './layout/graph.js';
 import type { FromWorker, LayoutInit, LayoutUpdate } from './layout/protocol.js';
 import { Camera } from './render/camera.js';
-import { colorForPath, drawScene, type SceneInput } from './render/scene.js';
+import { DIR_COLOR_INDEX, drawScene, paletteIndexForPath, type SceneInput } from './render/scene.js';
 import { Playback } from './time/playback.js';
 import { formatCommitLabel, mountTransport } from './ui/transport.js';
 import type { Pack } from '../src/model/types.js';
-
-const DIR_COLOR = '#39414d';
 
 async function start(): Promise<void> {
   const canvas = document.getElementById('scene') as HTMLCanvasElement;
@@ -22,9 +20,12 @@ async function start(): Promise<void> {
   const pack: Pack = await loadPack();
   const { pathCount } = pack.meta;
 
-  const color: string[] = new Array<string>(pathCount);
+  // Цвет узла — индекс в палитре сцены; строку для кисти отрисовка достаёт
+  // сама. Одно объявление цвета каталога на весь проект живёт в PALETTE.
+  const color = new Uint8Array(pathCount);
   for (let path = 0; path < pathCount; path++) {
-    color[path] = pack.pathIsDir[path] === 1 ? DIR_COLOR : colorForPath(pack.paths[path]!);
+    color[path] =
+      pack.pathIsDir[path] === 1 ? DIR_COLOR_INDEX : paletteIndexForPath(pack.paths[path]!);
   }
 
   const scene: SceneInput = {
@@ -38,22 +39,31 @@ async function start(): Promise<void> {
 
   const camera = new Camera();
   camera.attach(canvas);
-  let fitted = false;
+
+  const hud = document.getElementById('hud');
+
+  /**
+   * Вписывает живые узлы, пока камерой не завладел пользователь. Полоса HUD
+   * (строка состояния и панель транспорта) из высоты вычитается: она лежит
+   * поверх холста, и без этого нижняя часть дерева пряталась бы под ней.
+   */
+  const followLayout = (): void => {
+    const reserved = hud ? hud.offsetHeight + 12 : 0;
+    const height = Math.max(1, canvas.clientHeight - reserved);
+    camera.autoFit(scene.positions, scene.active, canvas.clientWidth, height);
+  };
 
   const worker = new Worker(new URL('./layout/worker.ts', import.meta.url), { type: 'module' });
   worker.onmessage = (event: MessageEvent<FromWorker>) => {
     if (event.data.type !== 'positions') return;
     scene.positions = event.data.positions;
-    // Вписываем камеру один раз — но только когда вписывать действительно было
-    // что: на пустой сцене fitActive ничего не делает, и поднимать флаг нельзя.
-    if (!fitted && event.data.alpha < 0.3) {
-      fitted = camera.fitActive(
-        scene.positions,
-        scene.active,
-        canvas.clientWidth,
-        canvas.clientHeight,
-      );
-    }
+    // Вписываем на каждом сообщении раскладки, а не однажды по порогу
+    // температуры: дерево стартует плотным комком у родителей и расходится
+    // за несколько сообщений — защёлкнутый масштаб оставил бы первый кадр
+    // обрезанным. Сообщения приходят, только пока симуляция идёт, поэтому
+    // слежение прекращается само, когда раскладка успокоилась, а колесо или
+    // перетаскивание отключают его немедленно (см. Camera.autoFit).
+    followLayout();
   };
   // Ловит и ошибку загрузки модуля воркера, и необработанное исключение внутри
   // него: без этого раскладка молча не запускается, а узлы остаются в нуле.
@@ -66,6 +76,9 @@ async function start(): Promise<void> {
   worker.postMessage(init);
 
   const engine = new TimeEngine(pack);
+
+  /** Неизменная часть строки состояния: имя, коммиты, файлы, авторы. */
+  const packDescription = describePack(pack);
 
   /**
    * Переносит разницу движка времени в сцену и в воркер.
@@ -126,9 +139,11 @@ async function start(): Promise<void> {
     worker.postMessage(update);
 
     if (status) {
+      // Описание репозитория за сессию не меняется и посчитано один раз выше:
+      // на шаге воспроизведения остаётся только пересчитать живые узлы.
       let live = 0;
       for (let path = 0; path < pathCount; path++) if (scene.active[path] === 1) live++;
-      status.textContent = `${describePack(pack)} · узлов: ${live}`;
+      status.textContent = `${packDescription} · узлов: ${live}`;
     }
   }
 
@@ -142,7 +157,7 @@ async function start(): Promise<void> {
   const handles = transportRoot
     ? mountTransport(transportRoot, {
         commitCount: pack.meta.commitCount,
-        commitTs: pack.commitTs,
+        commitEventStart: pack.commitEventStart,
         onSeek: (index: number) => {
           playback.pause();
           playback.reset();
@@ -176,6 +191,10 @@ async function start(): Promise<void> {
     canvas.width = Math.round(canvas.clientWidth * dpr);
     canvas.height = Math.round(canvas.clientHeight * dpr);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    // Раскладка к этому моменту может уже стоять, и новых сообщений от воркера
+    // не будет — вписываем сами, иначе после изменения размера окна (в том
+    // числе из нулевого, как в скрытой вкладке) дерево осталось бы за кадром.
+    followLayout();
   };
   window.addEventListener('resize', resize);
   resize();
