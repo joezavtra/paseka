@@ -12,12 +12,16 @@
       #status { position: fixed; left: 12px; bottom: 12px; padding: 6px 10px;
         background: #161b22cc; border: 1px solid #30363d; border-radius: 6px; }
       #status[hidden] { display: none; }
-      .fatal { color: #ff7b72; max-width: 60ch; }
+      #fatal { position: fixed; left: 12px; top: 12px; padding: 8px 12px;
+        background: #3d1418; border: 1px solid #ff7b72; border-radius: 6px;
+        color: #ff7b72; max-width: 60ch; }
+      #fatal[hidden] { display: none; }
     </style>
   </head>
   <body>
     <canvas id="scene"></canvas>
     <div id="status">Читаю историю репозитория…</div>
+    <div id="fatal" hidden></div>
     <script type="module" src="./main.ts"></script>
   </body>
 </html>

@@ -60,7 +60,7 @@ async function start(): Promise<void> {
     showFatal(`Раскладка не запустилась: воркер аварийно завершился. ${detail}`);
   };
 
-  const init: LayoutInit = { type: 'init', pathCount, seed: 20260817 };
+  const init: LayoutInit = { type: 'init', pathCount, parent: pack.pathParent, seed: 20260817 };
   worker.postMessage(init);
 
   const engine = new TimeEngine(pack);
@@ -94,24 +94,32 @@ async function start(): Promise<void> {
       for (const path of delta.touched) remember(path);
     }
 
+    // Пока воркер не прислал позиции нового узла, рисуем его у родителя, а не
+    // в мировом нуле: иначе на каждый коммит с воспроизведением будет вспышка
+    // в центре сцены на один кадр. Годится только уже стоявший родитель — если
+    // он сам родился в этой же разнице, у него ещё нет настоящей позиции.
+    const addedThisDelta = new Set(delta.added);
+    for (const path of delta.added) {
+      const parentId = pack.pathParent[path]!;
+      if (parentId === path) continue; // корень
+      if (scene.active[parentId] !== 1) continue;
+      if (addedThisDelta.has(parentId)) continue;
+      scene.positions[path * 2] = scene.positions[parentId * 2]!;
+      scene.positions[path * 2 + 1] = scene.positions[parentId * 2 + 1]!;
+    }
+
     const links = buildActiveLinks(scene.active, pack.pathParent);
     scene.linkSource = links.source;
     scene.linkTarget = links.target;
 
-    const parentOf = new Uint32Array(delta.added.length);
-    for (let i = 0; i < delta.added.length; i++) {
-      parentOf[i] = pack.pathParent[delta.added[i]!]!;
-    }
-
     const update: LayoutUpdate = {
       type: 'update',
+      active: scene.active.slice(),
       added: delta.added,
-      removed: delta.removed,
       radiusIds: Uint32Array.from(radiusIds),
       radiusValues: Float32Array.from(radiusValues),
       linkSource: links.source,
       linkTarget: links.target,
-      parentOf,
     };
     worker.postMessage(update);
 
