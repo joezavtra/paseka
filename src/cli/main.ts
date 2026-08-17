@@ -20,6 +20,9 @@ export interface CliOptions {
   help: boolean;
 }
 
+/** Ошибка в том, как запустили команду; текст рассчитан на показ пользователю. */
+export class CliError extends Error {}
+
 const USAGE = `gource-reborn — интерактивная визуализация истории git
 
   npx gource-reborn [путь]
@@ -30,25 +33,63 @@ const USAGE = `gource-reborn — интерактивная визуализац
   --help       показать эту справку
 `;
 
-export function parseArgs(argv: string[]): CliOptions {
-  const { values, positionals } = parseNodeArgs({
-    args: argv,
-    allowPositionals: true,
-    options: {
-      port: { type: 'string' },
-      open: { type: 'boolean', default: true },
-      // node:util parseArgs не умеет автоматически превращать булев флаг
-      // `open` в отрицание по `--no-open` — заводим отдельную опцию и
-      // объединяем значения вручную.
-      'no-open': { type: 'boolean', default: false },
-      stats: { type: 'boolean', default: false },
-      help: { type: 'boolean', default: false },
-    },
-  });
+const DEFAULT_PORT = 7420;
+const MAX_PORT = 65535;
 
+/**
+ * Порт должен быть целым числом от 0 до 65535; ноль допустим и означает
+ * «попроси свободный порт у системы». Без этой проверки `--port abc`
+ * превращался в NaN, а `--port 99999` доезжал до server.listen и падал
+ * англоязычным стектрейсом Node.
+ */
+function parsePort(raw: string | undefined): number {
+  if (raw === undefined) return DEFAULT_PORT;
+
+  const text = raw.trim();
+  const port = text === '' ? Number.NaN : Number(text);
+  if (!Number.isInteger(port)) {
+    throw new CliError(`Порт должен быть целым числом, а получено «${raw}».`);
+  }
+  if (port < 0 || port > MAX_PORT) {
+    throw new CliError(
+      `Порт должен быть в диапазоне от 0 до ${MAX_PORT}, а получено ${port}. ` +
+        'Ноль означает «выбрать свободный порт автоматически».',
+    );
+  }
+  return port;
+}
+
+export function parseArgs(argv: string[]): CliOptions {
+  let parsed;
+  try {
+    parsed = parseNodeArgs({
+      args: argv,
+      allowPositionals: true,
+      options: {
+        port: { type: 'string' },
+        open: { type: 'boolean', default: true },
+        // node:util parseArgs не умеет автоматически превращать булев флаг
+        // `open` в отрицание по `--no-open` — заводим отдельную опцию и
+        // объединяем значения вручную.
+        'no-open': { type: 'boolean', default: false },
+        stats: { type: 'boolean', default: false },
+        help: { type: 'boolean', default: false },
+      },
+    });
+  } catch (error) {
+    // node:util сообщает об опечатках в флагах по-английски — заворачиваем в
+    // русскую формулировку, оставляя исходный текст как уточнение.
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new CliError(
+      `Не удалось разобрать аргументы командной строки: ${detail}\n` +
+        'Список поддерживаемых флагов: gource-reborn --help',
+    );
+  }
+
+  const { values, positionals } = parsed;
   return {
     repoPath: positionals[0] ?? process.cwd(),
-    port: values.port ? Number(values.port) : 7420,
+    port: parsePort(values.port),
     open: values['no-open'] ? false : values.open !== false,
     stats: values.stats === true,
     help: values.help === true,
@@ -88,7 +129,8 @@ export function formatStats(pack: Pack): string {
     `репозиторий: ${pack.meta.repoName} (${pack.meta.head})`,
     `коммитов: ${pack.meta.commitCount}`,
     `авторов: ${pack.authors.length}`,
-    `путей: ${pack.meta.pathCount} (файлов: ${files})`,
+    // pathCount включает синтетический корень дерева — в сводке он лишний.
+    `путей: ${pack.meta.pathCount - 1} (файлов: ${files})`,
     `изменений файлов: ${pack.eventPath.length}`,
     `период: ${span}`,
   ].join('\n');
@@ -118,7 +160,17 @@ async function hasWebBundle(webRoot: string): Promise<boolean> {
 }
 
 export async function run(argv: string[]): Promise<number> {
-  const options = parseArgs(argv);
+  let options: CliOptions;
+  try {
+    options = parseArgs(argv);
+  } catch (error) {
+    if (error instanceof CliError) {
+      process.stderr.write(`${error.message}\n`);
+      return 1;
+    }
+    throw error;
+  }
+
   if (options.help) {
     process.stdout.write(USAGE);
     return 0;
@@ -161,10 +213,17 @@ export async function run(argv: string[]): Promise<number> {
     // (ошибка чтения репозитория, нормальная остановка) обязаны его закрыть,
     // иначе процесс зависнет и не отдаст управление даже после вывода ошибки.
     try {
+      // Адрес и вкладка — сразу, не дожидаясь конца парсинга: /api/pack ответит,
+      // когда pack будет готов, а до тех пор страница показывает свой статус
+      // «Читаю историю репозитория…». Иначе на больших репозиториях пользователь
+      // десятки секунд смотрит в пустой терминал.
+      process.stderr.write('\r\x1b[K');
+      process.stdout.write(`${server.url}\nОстановить: Ctrl+C\n\n`);
+      if (options.open) openBrowser(server.url);
+
       const pack = await packPromise;
       process.stderr.write('\r\x1b[K');
-      process.stdout.write(`${formatStats(pack)}\n\n${server.url}\nОстановить: Ctrl+C\n`);
-      if (options.open) openBrowser(server.url);
+      process.stdout.write(`${formatStats(pack)}\n`);
 
       await new Promise<void>((done) => {
         const stop = () => done();
@@ -205,7 +264,17 @@ function isMainModule(): boolean {
 }
 
 if (isMainModule()) {
-  run(process.argv.slice(2)).then((code) => {
-    process.exitCode = code;
-  });
+  // Любая ошибка на точке входа — это сообщение пользователю, а не дамп Node:
+  // без этого обработчика опечатка во флаге или сбой внутри `run` печатались
+  // англоязычным стектрейсом необработанного отклонения промиса.
+  run(process.argv.slice(2)).then(
+    (code) => {
+      process.exitCode = code;
+    },
+    (error: unknown) => {
+      const detail = error instanceof Error ? error.message : String(error);
+      process.stderr.write(`\r\x1b[KНе удалось выполнить команду: ${detail}\n`);
+      process.exitCode = 1;
+    },
+  );
 }

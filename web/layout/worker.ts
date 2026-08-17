@@ -35,13 +35,20 @@ self.onmessage = (event: MessageEvent<ToWorker>) => {
   if (message.type !== 'init') return;
 
   const rng = makeRng(message.seed);
-  nodes = Array.from({ length: message.nodeCount }, (_, index) => ({
-    index,
-    // Стартуем кольцом, а не точкой: из точки d3-force расталкивает узлы долго.
-    x: Math.cos(rng() * Math.PI * 2) * 400 * Math.sqrt(rng()),
-    y: Math.sin(rng() * Math.PI * 2) * 400 * Math.sqrt(rng()),
-    radius: message.radius[index] ?? 3,
-  }));
+  nodes = Array.from({ length: message.nodeCount }, (_, index) => {
+    // Стартуем диском, а не точкой: из точки d3-force расталкивает узлы долго.
+    // Угол и радиус берём по одному разу на точку: с четырьмя независимыми
+    // случайными числами угол для x не совпадал с углом для y, и вместо диска
+    // радиуса 400 получалась фигура с разбросом до 400·√2.
+    const angle = rng() * Math.PI * 2;
+    const distance = Math.sqrt(rng()) * 400;
+    return {
+      index,
+      x: Math.cos(angle) * distance,
+      y: Math.sin(angle) * distance,
+      radius: message.radius[index] ?? 3,
+    };
+  });
 
   // d3-force принимает числовые source/target и сам заменяет их на узлы по индексу.
   const links: SimulationLinkDatum<Node>[] = Array.from(

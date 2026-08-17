@@ -42,6 +42,20 @@ describe('buildPack', () => {
     });
   });
 
+  it('берёт границы периода как минимум и максимум, а не как края массива', () => {
+    // Даты автора не монотонны по порядку коммитов: так выглядит история после
+    // rebase, cherry-pick или git am — старый патч приезжает в середину.
+    const shuffled: RawCommit[] = [
+      { ...commits[0]!, hash: 'aaa111', timestamp: 500 },
+      { ...commits[0]!, hash: 'bbb222', timestamp: 100 },
+      { ...commits[0]!, hash: 'ccc333', timestamp: 900 },
+      { ...commits[0]!, hash: 'ddd444', timestamp: 300 },
+    ];
+    const pack = buildPack(shuffled, { repoName: 'demo', head: 'ddd444' });
+    expect(pack.meta.firstTs).toBe(100);
+    expect(pack.meta.lastTs).toBe(900);
+  });
+
   it('строит пул путей вместе с директориями', () => {
     const pack = buildPack(commits, { repoName: 'demo', head: 'bbb222' });
     expect(pack.paths).toEqual(['', 'src', 'src/a.ts', 'README.md', 'logo.png']);

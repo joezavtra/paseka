@@ -59,6 +59,20 @@ export function buildPack(commits: RawCommit[], opts: BuildOptions): Pack {
     commitEventStart.push(eventPath.length);
   }
 
+  // Границы периода считаем по всему массиву: в `git log` берётся дата автора,
+  // а порядок коммитов — по дате коммита, и после rebase, cherry-pick или
+  // `git am` края массива вовсе не обязаны быть минимумом и максимумом.
+  let firstTs = 0;
+  let lastTs = 0;
+  if (commitTs.length > 0) {
+    firstTs = commitTs[0]!;
+    lastTs = commitTs[0]!;
+    for (const ts of commitTs) {
+      if (ts < firstTs) firstTs = ts;
+      if (ts > lastTs) lastTs = ts;
+    }
+  }
+
   const pathCount = table.size();
   const history = buildPathHistory({
     pathCount,
@@ -75,8 +89,8 @@ export function buildPack(commits: RawCommit[], opts: BuildOptions): Pack {
       head: opts.head,
       commitCount: commits.length,
       pathCount,
-      firstTs: commitTs.length > 0 ? commitTs[0]! : 0,
-      lastTs: commitTs.length > 0 ? commitTs[commitTs.length - 1]! : 0,
+      firstTs,
+      lastTs,
     },
     paths: table.paths.slice(),
     pathParent: Uint32Array.from(table.parent),

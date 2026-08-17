@@ -3,15 +3,22 @@ import type { Pack } from '../../src/model/types.js';
 
 /**
  * Какие пути существуют на момент коммита `commitIndex` включительно.
+ * Собственная жизнь пути определяется его интервалами жизни, а не флагом
+ * `pathIsDir`: флаг означает «путь когда-либо был родителем» и живёт до конца
+ * истории, поэтому файл без расширения, ставший позже каталогом (`docs`, а
+ * затем `docs/guide.md`), по флагу исчез бы из живого множества навсегда.
+ * Флаг остаётся исключительно для рендера.
+ *
  * Директория живёт, пока жив хотя бы один её потомок, поэтому от каждого
- * живого файла поднимаемся к корню с ранним выходом на уже помеченном узле.
+ * живого пути поднимаемся к корню с ранним выходом на уже помеченном узле.
+ * У пути с собственными интервалами и потомками работают оба правила: он жив,
+ * если жив сам или жив хоть один потомок.
  */
 export function aliveAt(pack: Pack, commitIndex: number): Uint8Array {
   const { pathCount } = pack.meta;
   const alive = new Uint8Array(pathCount);
 
   for (let path = 0; path < pathCount; path++) {
-    if (pack.pathIsDir[path] === 1) continue;
     const from = pack.lifetimeStart[path];
     const to = pack.lifetimeStart[path + 1];
     for (let k = from; k < to; k++) {

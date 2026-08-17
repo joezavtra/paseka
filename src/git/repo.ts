@@ -33,7 +33,7 @@ export async function inspectRepo(cwd: string): Promise<RepoInfo> {
   let root: string;
   try {
     root = await git(dir, ['rev-parse', '--show-toplevel']);
-  } catch (error) {
+  } catch {
     throw new RepoError(
       `${dir} не является git-репозиторием. Запустите gource-reborn внутри репозитория ` +
         'или укажите путь к нему аргументом.',
