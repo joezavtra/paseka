@@ -33,22 +33,34 @@ export async function* streamCommits(root: string): AsyncGenerator<RawCommit> {
     child.on('close', (code) => resolveExit(code ?? 0));
   });
 
+  // Ошибка чтения stdout (например, поток оборвался) запоминается, а не
+  // пробрасывается сразу: причина обрыва может быть в неудачном спавне —
+  // тогда приоритет у `spawnError`, — а может быть и самостоятельной проблемой
+  // при штатном коде возврата. Разбираем это ниже, после `await exit`, чтобы
+  // не выдать тихий успех с оборванной историей коммитов.
   const parser = new CommitParser();
+  let streamError: unknown = null;
   try {
     for await (const chunk of child.stdout as AsyncIterable<string>) {
       yield* parser.push(chunk);
     }
-  } catch {
-    // При неудачном спавне stdout может оборваться с ошибкой вместо тихого
-    // завершения — разбираться в причине будем ниже, по `spawnError`/коду выхода.
+  } catch (error) {
+    streamError = error;
   } finally {
     if (child.exitCode === null) child.kill();
   }
 
   const code = await exit;
+  // Порядок проверки — по убыванию определённости причины: сначала сбой
+  // самого спавна, затем явный ненулевой код завершения git, и только потом
+  // ошибка чтения потока при формально успешном (код 0) завершении.
   if (spawnError) throw spawnError;
   if (code !== 0) {
     throw new RepoError(`git log завершился с кодом ${code}:\n${stderr.trim()}`);
+  }
+  if (streamError) {
+    const message = streamError instanceof Error ? streamError.message : String(streamError);
+    throw new RepoError(`Чтение вывода git log прервалось: ${message}`);
   }
   yield* parser.flush();
 }
