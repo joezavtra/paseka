@@ -89,4 +89,28 @@ describe('RecentEvents', () => {
     buffer.push(1, 99, 0);
     expect(collect(buffer, 0)).toEqual([]);
   });
+
+  it('не заводит событие с нечисловым идентификатором автора', () => {
+    const buffer = new RecentEvents(8, 1000, 4);
+    buffer.push(1, Number.NaN, 0);
+    expect(collect(buffer, 0)).toEqual([]);
+  });
+
+  it('не заводит событие с отрицательным идентификатором автора', () => {
+    const buffer = new RecentEvents(8, 1000, 4);
+    buffer.push(1, -1, 0);
+    expect(collect(buffer, 0)).toEqual([]);
+  });
+
+  it('не заводит событие с нечисловым путём', () => {
+    const buffer = new RecentEvents(8, 1000, 4);
+    buffer.push(Number.NaN, 0, 0);
+    expect(collect(buffer, 0)).toEqual([]);
+  });
+
+  it('не заводит событие с отрицательным путём', () => {
+    const buffer = new RecentEvents(8, 1000, 4);
+    buffer.push(-1, 0, 0);
+    expect(collect(buffer, 0)).toEqual([]);
+  });
 });

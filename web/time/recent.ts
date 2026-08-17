@@ -29,7 +29,8 @@ export class RecentEvents {
 
   push(path: number, author: number, atMs: number): void {
     if (!Number.isFinite(atMs)) return;
-    if (author < 0 || author >= this.seen.length) return;
+    if (!Number.isInteger(path) || path < 0) return;
+    if (!Number.isInteger(author) || author < 0 || author >= this.seen.length) return;
 
     const slot = (this.head + this.size) % this.capacity;
     this.path[slot] = path;
