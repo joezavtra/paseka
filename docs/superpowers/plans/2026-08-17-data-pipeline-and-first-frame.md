@@ -1360,11 +1360,15 @@ export function buildPack(commits: RawCommit[], opts: BuildOptions): Pack {
   for (let c = 0; c < commits.length; c++) {
     const commit = commits[c]!;
 
-    let authorId = authorIndex.get(commit.authorEmail);
+    // Ключ нормализуем, а хранимый email — нет: разные git-клиенты пишут почту
+    // в разном регистре, и без этого один человек распался бы на двух авторов.
+    // В пул при этом кладём написание из первого вхождения — данные не переписываем.
+    const authorKey = commit.authorEmail.trim().toLowerCase();
+    let authorId = authorIndex.get(authorKey);
     if (authorId === undefined) {
       authorId = authors.length;
       authors.push({ name: commit.authorName, email: commit.authorEmail });
-      authorIndex.set(commit.authorEmail, authorId);
+      authorIndex.set(authorKey, authorId);
     }
 
     commitTs.push(commit.timestamp);
