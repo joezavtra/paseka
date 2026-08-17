@@ -155,7 +155,7 @@ describe('Playback', () => {
     expect(steps).toBe(0);
   });
 
-  it('скорость восстанавливает эффект после возврата к нормальной', () => {
+  it('нулевая скорость не прерывает накопитель — восстанавливает работу после возврата', () => {
     let steps = 0;
     const playback = new Playback(() => {
       steps++;
@@ -168,5 +168,33 @@ describe('Playback', () => {
     playback.speed = 4;
     expect(playback.advance(0.5)).toBe(2);
     expect(steps).toBe(2);
+  });
+
+  it('нечисловая скорость не портит накопитель — восстанавливает работу после возврата', () => {
+    let steps = 0;
+    const playback = new Playback(() => {
+      steps++;
+      return true;
+    });
+    playback.speed = 10;
+    playback.play();
+    // Накопим остаток: 0.1 * 10 = 1.0 -> 1 шаг, carry = 0.
+    expect(playback.advance(0.1)).toBe(1);
+    expect(steps).toBe(1);
+    // Второй кадр даст остаток: 0.15 * 10 = 1.5 -> 1 шаг, carry = 0.5.
+    expect(playback.advance(0.15)).toBe(1);
+    expect(steps).toBe(2);
+
+    // Портим скорость на NaN.
+    (playback as any).speed = NaN;
+    // Один кадр NaN скорость дает ноль шагов, накопитель 0.5 не должен потеряться.
+    expect(playback.advance(0.5)).toBe(0);
+    expect(steps).toBe(2);
+
+    // Возвращаем нормальную скорость 8.
+    playback.speed = 8;
+    // carry=0.5 + 0.2 * 8 = 2.1 -> 2 шага, остаток 0.1.
+    expect(playback.advance(0.2)).toBe(2);
+    expect(steps).toBe(4);
   });
 });
