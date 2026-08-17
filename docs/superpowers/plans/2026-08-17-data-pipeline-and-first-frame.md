@@ -35,6 +35,7 @@
 | `src/model/path-table.ts` | Интернирование путей, создание директорий, дерево родителей |
 | `src/model/history.ts` | Времена жизни путей и накопленные размеры файлов |
 | `src/model/build.ts` | Сборка `Pack` из `RawCommit[]` |
+| `src/util/rng.ts` | Детерминированный ГПСЧ; общий для воркера и тестов |
 | `src/pack/encode.ts` | `Pack` → `Uint8Array` |
 | `src/pack/decode.ts` | `Uint8Array` → `Pack` (работает и в браузере) |
 | `src/server/serve.ts` | HTTP: статика + `/api/pack` с gzip |
@@ -50,7 +51,6 @@
 | `web/render/scene.ts` | Отрисовка рёбер и узлов на canvas |
 | `web/main.ts` | Сборка всего вместе на странице |
 | `tests/helpers/tmp-repo.ts` | Создание временного git-репозитория для тестов |
-| `tests/helpers/random.ts` | Детерминированный ГПСЧ для property-тестов |
 
 ---
 
@@ -1597,22 +1597,25 @@ git commit -m "feat(cli): repository summary command"
 ### Task 7: Кодек pack
 
 **Files:**
-- Create: `src/pack/encode.ts`, `src/pack/decode.ts`
-- Create: `tests/helpers/random.ts`
+- Create: `src/util/rng.ts`, `src/pack/encode.ts`, `src/pack/decode.ts`
 - Test: `tests/pack/codec.test.ts`
 
 **Interfaces:**
 - Consumes: `Pack` (Task 5)
-- Produces: `PACK_VERSION = 1`; `encodePack(pack: Pack): Uint8Array`; `class PackError extends Error`; `decodePack(bytes: Uint8Array): Pack`; тестовый хелпер `makeRng(seed: number): () => number`
+- Produces: `makeRng(seed: number): () => number`; `PACK_VERSION = 1`; `encodePack(pack: Pack): Uint8Array`; `class PackError extends Error`; `decodePack(bytes: Uint8Array): Pack`
 
 - [ ] **Step 1: Написать детерминированный ГПСЧ**
 
-`tests/helpers/random.ts`:
+Модуль общий: его используют и property-тесты, и воркер симуляции (Task 11).
+Зависимостей от `node:` в нём нет, поэтому он спокойно попадает в web-бандл.
+
+`src/util/rng.ts`:
 
 ```ts
 /**
  * mulberry32 — крошечный детерминированный генератор.
- * Math.random() в тестах запрещён: падение должно воспроизводиться.
+ * Math.random() запрещён и в тестах (падение должно воспроизводиться),
+ * и в раскладке графа (два запуска на репозитории должны давать похожую картинку).
  */
 export function makeRng(seed: number): () => number {
   let a = seed >>> 0;
@@ -1634,7 +1637,7 @@ import { describe, it, expect } from 'vitest';
 import { encodePack } from '../../src/pack/encode.js';
 import { decodePack, PackError } from '../../src/pack/decode.js';
 import { buildPack } from '../../src/model/build.js';
-import { makeRng } from '../helpers/random.js';
+import { makeRng } from '../../src/util/rng.js';
 import type { RawCommit } from '../../src/git/types.js';
 import type { Pack } from '../../src/model/types.js';
 
@@ -2475,7 +2478,7 @@ git commit -m "feat(web): alive set and file sizes at a commit"
 - Test: `tests/web/graph.test.ts`
 
 **Interfaces:**
-- Consumes: `Pack` (Task 5), `aliveAt`/`sizesAt` (Task 10), `d3-force`
+- Consumes: `Pack` (Task 5), `aliveAt`/`sizesAt` (Task 10), `makeRng` (Task 7), `d3-force`
 - Produces: `LayoutGraph { nodeIds: Uint32Array; linkSource: Uint32Array; linkTarget: Uint32Array }` (индексы в `nodeIds`); `buildLayoutGraph(alive: Uint8Array, parent: Uint32Array): LayoutGraph`; `radiusFor(lines: number, isDir: boolean): number`; типы сообщений `LayoutInit`, `LayoutPositions`
 
 - [ ] **Step 1: Написать падающий тест**
@@ -2629,6 +2632,7 @@ import {
   type Simulation,
   type SimulationLinkDatum,
 } from 'd3-force';
+import { makeRng } from '../../src/util/rng.js';
 import type { FromWorker, ToWorker } from './protocol.js';
 
 interface Node {
@@ -2641,17 +2645,6 @@ interface Node {
 let simulation: Simulation<Node, undefined> | null = null;
 let nodes: Node[] = [];
 let lastPost = 0;
-
-/** mulberry32: стартовые позиции должны быть воспроизводимыми. */
-function makeRng(seed: number): () => number {
-  let a = seed >>> 0;
-  return () => {
-    a = (a + 0x6d2b79f5) >>> 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
 
 function post(alpha: number): void {
   const positions = new Float32Array(nodes.length * 2);
