@@ -42,6 +42,12 @@ export class Playback {
   advance(dtSeconds: number): number {
     if (!this.running) return 0;
 
+    // Нечисловое или бесконечное время считаем нулевым — кадр просто пропускается.
+    if (!Number.isFinite(dtSeconds)) return 0;
+
+    // Неположительная или нечисловая скорость означает отсутствие шагов на этом кадре.
+    if (!Number.isFinite(this.speed) || this.speed <= 0) return 0;
+
     this.carry += Math.min(Math.max(dtSeconds, 0), MAX_STEP_SECONDS) * this.speed;
     let steps = 0;
     while (this.carry >= 1) {
