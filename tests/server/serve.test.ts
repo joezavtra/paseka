@@ -57,4 +57,54 @@ describe('startServer', () => {
     running.push(second);
     expect(second.port).not.toBe(first.port);
   });
+
+  it('сжимает pack один раз при параллельных запросах', async () => {
+    let calls = 0;
+    const payload = new Uint8Array([9, 8, 7, 6, 5]);
+    const server = await startServer({
+      webRoot: await makeWebRoot(),
+      port: 0,
+      getPack: async () => {
+        calls++;
+        await new Promise((done) => setTimeout(done, 20));
+        return payload;
+      },
+    });
+    running.push(server);
+
+    const [first, second] = await Promise.all([
+      fetch(`${server.url}/api/pack`),
+      fetch(`${server.url}/api/pack`),
+    ]);
+    const [firstBody, secondBody] = await Promise.all([
+      first.arrayBuffer(),
+      second.arrayBuffer(),
+    ]);
+
+    expect(calls).toBe(1);
+    expect(new Uint8Array(firstBody)).toEqual(payload);
+    expect(new Uint8Array(secondBody)).toEqual(payload);
+  });
+
+  it('повторяет попытку после ошибки в getPack', async () => {
+    let attempt = 0;
+    const payload = new Uint8Array([1, 1, 2, 3, 5]);
+    const server = await startServer({
+      webRoot: await makeWebRoot(),
+      port: 0,
+      getPack: async () => {
+        attempt++;
+        if (attempt === 1) throw new Error('boom');
+        return payload;
+      },
+    });
+    running.push(server);
+
+    const failed = await fetch(`${server.url}/api/pack`);
+    expect(failed.status).toBe(500);
+
+    const recovered = await fetch(`${server.url}/api/pack`);
+    expect(recovered.status).toBe(200);
+    expect(new Uint8Array(await recovered.arrayBuffer())).toEqual(payload);
+  });
 });

@@ -30,7 +30,20 @@ const MIME: Record<string, string> = {
 const PORT_ATTEMPTS = 20;
 
 export async function startServer(options: ServeOptions): Promise<RunningServer> {
-  let packGzip: Buffer | null = null;
+  // Кэшируем именно промис вычисления, а не готовый буфер: между проверкой
+  // на null и присваиванием стоит await, и без этого два параллельных запроса
+  // к /api/pack успевают оба увидеть пустой кэш и оба запустить сжатие.
+  // Если getPack() падает, промис сбрасывается — иначе кэш «залипает»
+  // в сломанном состоянии и следующий запрос никогда не попробует снова.
+  let packGzip: Promise<Buffer> | null = null;
+
+  function getPackGzip(): Promise<Buffer> {
+    packGzip ??= (async () => gzipSync(await options.getPack()))().catch((error: unknown) => {
+      packGzip = null;
+      throw error;
+    });
+    return packGzip;
+  }
 
   const server = createServer((request, response) => {
     handle(request, response).catch(() => {
@@ -43,14 +56,14 @@ export async function startServer(options: ServeOptions): Promise<RunningServer>
     const url = new URL(request.url ?? '/', 'http://localhost');
 
     if (url.pathname === '/api/pack') {
-      packGzip ??= gzipSync(await options.getPack());
+      const body = await getPackGzip();
       response.writeHead(200, {
         'content-type': 'application/octet-stream',
         'content-encoding': 'gzip',
         'cache-control': 'no-store',
-        'content-length': String(packGzip.length),
+        'content-length': String(body.length),
       });
-      response.end(packGzip);
+      response.end(body);
       return;
     }
 
