@@ -13,8 +13,6 @@ export interface TimeDelta {
   touched: Uint32Array;
 }
 
-const EMPTY = new Uint32Array(0);
-
 /**
  * Держит живое множество путей и их размеры на текущем курсоре.
  *
@@ -70,7 +68,11 @@ export class TimeEngine {
       if (this.alive[p] === 1) added.push(p);
       else removed.push(p);
     }
-    return { added: Uint32Array.from(added), removed: Uint32Array.from(removed), touched: EMPTY };
+    return {
+      added: Uint32Array.from(added),
+      removed: Uint32Array.from(removed),
+      touched: new Uint32Array(0),
+    };
   }
 
   private recompute(target: number): void {
@@ -126,32 +128,54 @@ export class TimeEngine {
    * Переводит курсор на следующий коммит, обрабатывая только его события.
    * Это горячий путь воспроизведения: стоимость — O(событий коммита + глубины
    * затронутых путей), без обхода всего дерева.
+   *
+   * Разница — это итог коммита, а не журнал промежуточных переходов: путь
+   * внутри одного коммита может мигнуть (например, каталог теряет одного
+   * потомка и тут же приобретает другого при переименовании без --rename),
+   * и такие мелькания не должны просачиваться наружу. Поэтому для каждого
+   * пути, которого касается refresh, запоминаем живость до шага — при первом
+   * касании, до изменения, — а added/removed строим после цикла по событиям,
+   * сравнивая итоговую живость с запомненной. Вернувшиеся к исходному
+   * состоянию пути в разницу не попадают, а заодно пропадают и повторы.
    */
   step(): TimeDelta {
     const next = this.cursorIndex + 1;
     if (next >= this.pack.meta.commitCount) {
-      return { added: EMPTY, removed: EMPTY, touched: EMPTY };
+      return { added: new Uint32Array(0), removed: new Uint32Array(0), touched: new Uint32Array(0) };
     }
 
     const { pack } = this;
-    const added: number[] = [];
-    const removed: number[] = [];
     const touched: number[] = [];
+    const touchedSeen = new Set<number>();
+    const priorAlive = new Map<number, number>();
 
     for (let e = pack.commitEventStart[next]; e < pack.commitEventStart[next + 1]; e++) {
       const path = pack.eventPath[e];
       const kind = pack.eventKind[e];
-      touched.push(path);
+      if (!touchedSeen.has(path)) {
+        touchedSeen.add(path);
+        touched.push(path);
+      }
       this.sizes[path] = pack.pathEventLines[this.linePos[e]];
 
       const own = kind === KIND_DELETE ? 0 : 1;
       if (own !== this.ownAlive[path]) {
         this.ownAlive[path] = own;
-        this.refresh(path, added, removed);
+        this.refresh(path, priorAlive);
       }
     }
 
     this.cursorIndex = next;
+
+    const added: number[] = [];
+    const removed: number[] = [];
+    for (const [path, before] of priorAlive) {
+      const after = this.alive[path];
+      if (after === before) continue; // мигнул и вернулся — это не изменение
+      if (after === 1) added.push(path);
+      else removed.push(path);
+    }
+
     return {
       added: Uint32Array.from(added),
       removed: Uint32Array.from(removed),
@@ -161,20 +185,22 @@ export class TimeEngine {
 
   /**
    * Пересчитывает живость пути и, если она изменилась, поднимается к корню:
-   * директория жива ровно пока у неё есть живые потомки.
+   * директория жива ровно пока у неё есть живые потомки. Живость каждого
+   * впервые затронутого в этом шаге пути фиксируется в priorAlive до
+   * изменения — это и есть база для итоговой разницы шага.
    */
-  private refresh(path: number, added: number[], removed: number[]): void {
+  private refresh(path: number, priorAlive: Map<number, number>): void {
+    if (!priorAlive.has(path)) priorAlive.set(path, this.alive[path]);
+
     const now = this.ownAlive[path] === 1 || this.liveChildren[path] > 0 ? 1 : 0;
     if (now === this.alive[path]) return;
 
     this.alive[path] = now;
-    if (now === 1) added.push(path);
-    else removed.push(path);
 
     if (path === 0) return; // у корня родитель — он сам
     const parent = this.pack.pathParent[path];
     if (now === 1) this.liveChildren[parent]++;
     else this.liveChildren[parent]--;
-    this.refresh(parent, added, removed);
+    this.refresh(parent, priorAlive);
   }
 }
