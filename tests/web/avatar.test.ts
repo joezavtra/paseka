@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { avatarColor, computeSafeHues, HUE_MARGIN, initialsFor } from '../../web/render/avatar.js';
-import { PALETTE } from '../../web/render/scene.js';
+import { PALETTE } from '../../web/render/palette.js';
 
 /**
  * Независимая от реализации проверка оттенка: пересчитываем HSL из hex сами,

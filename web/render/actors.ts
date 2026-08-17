@@ -36,6 +36,22 @@ export class ActorField {
     this.placed = new Uint8Array(authorCount);
   }
 
+  /**
+   * Забывает всё: позиции, скорости и память о том, что автор уже размещался.
+   *
+   * Нужен перемотке. Буфер событий она гасит, а поле без сброса помнило бы
+   * места из прежнего момента истории — и значок летел бы к новой цели через
+   * всё дерево дольше, чем живёт луч (2.8 с против 1.2 с), тогда как автор,
+   * не появлявшийся ни разу, вставал бы в ту же цель мгновенно. Одно событие
+   * не должно давать два разных поведения.
+   */
+  reset(): void {
+    this.positions.fill(0);
+    this.active.fill(0);
+    this.velocity.fill(0);
+    this.placed.fill(0);
+  }
+
   update(dtSeconds: number, targets: readonly ActorTarget[]): void {
     if (!Number.isFinite(dtSeconds) || dtSeconds <= 0) return;
     const dt = Math.min(dtSeconds, MAX_STEP_SECONDS);

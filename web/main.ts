@@ -3,12 +3,14 @@ import { TimeEngine, type TimeDelta } from './time/engine.js';
 import { buildActiveLinks, radiusFor } from './layout/graph.js';
 import type { FromWorker, LayoutInit, LayoutUpdate } from './layout/protocol.js';
 import { Camera } from './render/camera.js';
-import { DIR_COLOR_INDEX, drawScene, paletteIndexForPath, type SceneInput } from './render/scene.js';
+import { drawScene, type SceneInput } from './render/scene.js';
+import { DIR_COLOR_INDEX, paletteIndexForPath } from './render/palette.js';
+import { deriveActivity } from './render/activity.js';
 import { Playback } from './time/playback.js';
 import { formatCommitLabel, mountTransport } from './ui/transport.js';
 import type { Pack } from '../src/model/types.js';
 import { RecentEvents } from './time/recent.js';
-import { ActorField, type ActorTarget } from './render/actors.js';
+import { ActorField } from './render/actors.js';
 import { avatarColor, initialsFor } from './render/avatar.js';
 import type { ActorLayer, BeamLayer } from './render/scene.js';
 
@@ -53,7 +55,8 @@ async function start(): Promise<void> {
     count: 0,
     fromX: new Float32Array(ACTIVITY_CAPACITY),
     fromY: new Float32Array(ACTIVITY_CAPACITY),
-    toPath: new Uint32Array(ACTIVITY_CAPACITY),
+    toX: new Float32Array(ACTIVITY_CAPACITY),
+    toY: new Float32Array(ACTIVITY_CAPACITY),
     author: new Uint32Array(ACTIVITY_CAPACITY),
     strength: new Float32Array(ACTIVITY_CAPACITY),
   };
@@ -61,12 +64,6 @@ async function start(): Promise<void> {
   const flash = new Float32Array(pathCount);
   /** Пути, которым в прошлом кадре ставили свечение: гасим только их. */
   let litPaths: number[] = [];
-
-  // Копилки центроидов заводятся один раз: выделять их на каждом кадре значило
-  // бы мусорить шестьдесят раз в секунду ради нескольких чисел.
-  const centroidX = new Float64Array(authorCount);
-  const centroidY = new Float64Array(authorCount);
-  const centroidHits = new Uint32Array(authorCount);
 
   const scene: SceneInput = {
     active: new Uint8Array(pathCount),
@@ -154,8 +151,11 @@ async function start(): Promise<void> {
     if (full) {
       // Перемотка обязана погасить чужую активность: без этого буфер держал
       // бы лучи прежнего момента, нацеленные на пути, которые в новой позиции
-      // либо мертвы, либо принадлежат совсем другому коммиту.
+      // либо мертвы, либо принадлежат совсем другому коммиту. Вместе с буфером
+      // забывается и поле авторов: его позиции относятся к прежнему месту
+      // истории, и значок полз бы к новой цели дольше, чем живёт луч.
       recent.clear();
+      actorField.reset();
       for (let path = 0; path < pathCount; path++) {
         if (scene.active[path] === 1) remember(path);
       }
@@ -273,48 +273,29 @@ async function start(): Promise<void> {
     try {
       if (playback.advance(dt) > 0) syncTransport();
 
+      // Весь вывод кадра из буфера событий живёт в deriveActivity: здесь
+      // остаётся только разложить его результат по слоям сцены.
+      const activity = deriveActivity(recent, scene, nowMs, ACTIVITY_CAPACITY);
+
       // Гасим только то, что светилось в прошлом кадре: полный проход по всем
       // путям на каждом кадре был бы дороже самой отрисовки лучей.
       for (const path of litPaths) flash[path] = 0;
       litPaths = [];
-
-      beams.count = 0;
-      centroidX.fill(0);
-      centroidY.fill(0);
-      centroidHits.fill(0);
-
-      recent.forEach(nowMs, (path, author, strength) => {
-        if (scene.active[path] !== 1) return;
-        if (flash[path] < strength) {
-          if (flash[path] === 0) litPaths.push(path);
-          flash[path] = strength;
-        }
-        centroidX[author] += scene.positions[path * 2]!;
-        centroidY[author] += scene.positions[path * 2 + 1]!;
-        centroidHits[author]++;
-
-        if (beams.count < beams.toPath.length) {
-          const i = beams.count++;
-          beams.toPath[i] = path;
-          beams.author[i] = author;
-          beams.strength[i] = strength;
-        }
-      });
-
-      const targets: ActorTarget[] = [];
-      // Счётчик авторов в статусе обязан совпадать с тем, кто реально виден:
-      // отдельный проход по буферу (recent.activeAuthors) считал бы и тех, чьи
-      // события ссылаются на уже мёртвые пути — например, коммит, который
-      // только удаляет файлы, не даёт ни цели, ни значка, но буфер о нём
-      // всё равно помнит. centroidHits уже отфильтрован по scene.active выше.
-      let visibleAuthors = 0;
-      for (let author = 0; author < authorCount; author++) {
-        const count = centroidHits[author]!;
-        if (count === 0) continue;
-        visibleAuthors++;
-        targets.push({ author, x: centroidX[author]! / count, y: centroidY[author]! / count });
+      for (const lit of activity.flashes) {
+        flash[lit.path] = lit.strength;
+        litPaths.push(lit.path);
       }
-      actorField.update(dt, targets);
+
+      beams.count = activity.beams.length;
+      for (let i = 0; i < activity.beams.length; i++) {
+        const beam = activity.beams[i]!;
+        beams.toX[i] = beam.toX;
+        beams.toY[i] = beam.toY;
+        beams.author[i] = beam.author;
+        beams.strength[i] = beam.strength;
+      }
+
+      actorField.update(dt, activity.targets);
 
       // Начало луча — там, где значок оказался после этого шага поля.
       for (let i = 0; i < beams.count; i++) {
@@ -323,8 +304,11 @@ async function start(): Promise<void> {
         beams.fromY[i] = actorField.positions[author * 2 + 1]!;
       }
 
-      if (visibleAuthors !== shownAuthors) {
-        shownAuthors = visibleAuthors;
+      // Счётчик авторов в статусе — это ровно те, у кого есть цель, то есть
+      // хоть один живой видимый файл. Он не может разойтись с картинкой,
+      // потому что считается из того же вывода.
+      if (activity.targets.length !== shownAuthors) {
+        shownAuthors = activity.targets.length;
         renderStatus();
       }
 

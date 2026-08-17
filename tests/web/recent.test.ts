@@ -44,34 +44,11 @@ describe('RecentEvents', () => {
     expect(collect(buffer, 0).map((e) => e.path)).toEqual([2, 3]);
   });
 
-  it('считает авторов с живыми событиями, без повторов', () => {
-    const buffer = new RecentEvents(8, 1000, 4);
-    buffer.push(1, 0, 0);
-    buffer.push(2, 0, 0);
-    buffer.push(3, 1, 0);
-    expect(buffer.activeAuthors(0)).toBe(2);
-    expect(buffer.activeAuthors(1000)).toBe(0);
-  });
-
-  it('пересчитывает авторов заново на каждом вызове', () => {
-    const buffer = new RecentEvents(8, 1000, 4);
-    buffer.push(1, 0, 0);
-    buffer.push(2, 1, 900);
-    expect(buffer.activeAuthors(0)).toBe(1);
-    // Первое событие (author 0) живёт [0, 1000), поэтому на 950 оба события ещё
-    // живы (2 автора). Момент 1000 — граница: событие 0 уже мертво, событие 1
-    // (start 900, живёт до 1900) ещё живо — самая ранняя точка, где активен
-    // только один автор.
-    expect(buffer.activeAuthors(1000)).toBe(1);
-    expect(buffer.activeAuthors(1950)).toBe(0);
-  });
-
   it('очищается', () => {
     const buffer = new RecentEvents(8, 1000, 4);
     buffer.push(1, 0, 0);
     buffer.clear();
     expect(collect(buffer, 0)).toEqual([]);
-    expect(buffer.activeAuthors(0)).toBe(0);
   });
 
   it('не портится от нечислового времени', () => {
@@ -81,7 +58,6 @@ describe('RecentEvents', () => {
     // Событие с негодным временем просто не заводится, соседнее живёт.
     expect(collect(buffer, 0).map((e) => e.path)).toEqual([2]);
     expect(collect(buffer, Number.NaN)).toEqual([]);
-    expect(buffer.activeAuthors(Number.NaN)).toBe(0);
   });
 
   it('игнорирует автора вне диапазона', () => {

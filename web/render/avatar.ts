@@ -1,4 +1,5 @@
-import { PALETTE } from './scene.js';
+import { hashString } from '../../src/util/hash.js';
+import { PALETTE } from './palette.js';
 
 /** Буквы и цифры любого алфавита: имена в истории бывают не только латиницей. */
 const LETTER = /\p{L}|\p{N}/u;
@@ -90,10 +91,6 @@ const SAFE_HUES: readonly number[] = computeSafeHues(PALETTE, HUE_MARGIN);
  */
 export function avatarColor(email: string): string {
   const key = email.trim().toLowerCase();
-  let hash = 2166136261;
-  for (let i = 0; i < key.length; i++) {
-    hash = Math.imul(hash ^ key.charCodeAt(i), 16777619);
-  }
-  const hue = SAFE_HUES[(hash >>> 0) % SAFE_HUES.length]!;
+  const hue = SAFE_HUES[hashString(key) % SAFE_HUES.length]!;
   return `hsl(${hue} 70% 66%)`;
 }

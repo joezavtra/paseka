@@ -66,6 +66,43 @@ describe('ActorField', () => {
     expect(jump).toBeLessThan(1);
   });
 
+  it('после сброса ставит автора сразу в новую цель, как впервые появившегося', () => {
+    const field = new ActorField(4);
+    field.update(1 / 60, [at(1, -300, -300)]);
+
+    field.reset();
+    field.update(1 / 60, [at(1, 200, 100)]);
+
+    // Без сброса значок полз бы к новой цели пружиной — дольше, чем живёт луч.
+    expect(field.positions[2]).toBeCloseTo(200, 3);
+    expect(field.positions[3]).toBeCloseTo(100, 3);
+    expect(field.active[1]).toBe(1);
+  });
+
+  it('сброс забывает и позиции, и активность', () => {
+    const field = new ActorField(4);
+    field.update(1 / 60, [at(0, 50, 60), at(1, -50, -60)]);
+
+    field.reset();
+
+    expect([...field.positions]).toEqual(new Array(8).fill(0));
+    expect([...field.active]).toEqual([0, 0, 0, 0]);
+  });
+
+  it('после сброса вернувшийся автор не выпрыгивает остаточной скоростью', () => {
+    const field = new ActorField(2);
+    field.update(1 / 60, [at(0, 0, 0)]);
+    // Разгоняем автора к далёкой цели, чтобы накопить заметную скорость.
+    run(field, [at(0, 1000, 0)], 60);
+
+    field.reset();
+    field.update(1 / 60, [at(0, 10, 10)]);
+    field.update(1 / 60, [at(0, 10, 10)]);
+
+    expect(field.positions[0]).toBeCloseTo(10, 3);
+    expect(field.positions[1]).toBeCloseTo(10, 3);
+  });
+
   it('переживает пустой список целей', () => {
     const field = new ActorField(2);
     field.update(1 / 60, []);
