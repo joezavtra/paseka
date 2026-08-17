@@ -448,8 +448,6 @@ export interface TimeDelta {
   touched: Uint32Array;
 }
 
-const EMPTY = new Uint32Array(0);
-
 /**
  * Держит живое множество путей и их размеры на текущем курсоре.
  *
@@ -505,7 +503,13 @@ export class TimeEngine {
       if (this.alive[p] === 1) added.push(p);
       else removed.push(p);
     }
-    return { added: Uint32Array.from(added), removed: Uint32Array.from(removed), touched: EMPTY };
+    // Каждое поле — свой массив: общий экземпляр подложил бы свинью
+    // потребителю, который кэширует разницу по ссылке.
+    return {
+      added: Uint32Array.from(added),
+      removed: Uint32Array.from(removed),
+      touched: new Uint32Array(0),
+    };
   }
 
   private recompute(target: number): void {
@@ -640,6 +644,7 @@ describe('TimeEngine.step', () => {
     expect(engine.cursor).toBe(pack.meta.commitCount - 1);
     expect(delta.added.length).toBe(0);
     expect(delta.removed.length).toBe(0);
+    expect(delta.touched.length).toBe(0);
   });
 
   it('сообщает затронутые пути', () => {
@@ -665,7 +670,8 @@ describe('TimeEngine.step', () => {
   // Главный тест среза: пошаговый проход обязан совпасть с полным пересчётом
   // на каждом коммите. Здесь прячутся все инкрементальные ошибки.
   it('пошаговый проход совпадает с полным пересчётом на каждом коммите', () => {
-    for (const seed of [1, 7, 42, 1337, 20260817]) {
+    const seeds = [1, 7, 42, 1337, 20260817, ...Array.from({ length: 45 }, (_, i) => 1000 + i)];
+    for (const seed of seeds) {
       const pack = buildPack(randomCommits(seed, 40), { repoName: 'd', head: 'h' });
       const stepwise = new TimeEngine(pack);
       const reference = new TimeEngine(pack);
@@ -685,22 +691,83 @@ describe('TimeEngine.step', () => {
     }
   });
 
-  it('накопленные разницы шагов воспроизводят живое множество', () => {
-    const pack = buildPack(randomCommits(99, 30), { repoName: 'd', head: 'h' });
-    const engine = new TimeEngine(pack);
-    const mask = new Uint8Array(pack.meta.pathCount);
+  // Разница обязана быть итогом коммита, а не набором промежуточных переходов.
+  // Один сид здесь ничего не доказывает: сценарий, который ломает наивную
+  // реализацию, встречается примерно на трети случайных историй.
+  it('накопленные разницы шагов воспроизводят живое множество на многих историях', () => {
+    for (const length of [30, 40, 55]) {
+      for (let seed = 1; seed <= 40; seed++) {
+        const pack = buildPack(randomCommits(seed, length), { repoName: 'd', head: 'h' });
+        const engine = new TimeEngine(pack);
+        const mask = new Uint8Array(pack.meta.pathCount);
+        const where = `seed ${seed}, длина ${length}`;
 
-    for (let t = 0; t < pack.meta.commitCount; t++) {
-      const delta = engine.step();
-      for (const p of delta.added) {
-        expect(mask[p], `повторное добавление ${p} на коммите ${t}`).toBe(0);
-        mask[p] = 1;
+        for (let t = 0; t < pack.meta.commitCount; t++) {
+          const delta = engine.step();
+          const added = new Set(delta.added);
+          const removed = new Set(delta.removed);
+          expect(added.size, `повторы в added: ${where}, коммит ${t}`).toBe(delta.added.length);
+          expect(removed.size, `повторы в removed: ${where}, коммит ${t}`).toBe(
+            delta.removed.length,
+          );
+          for (const p of added) {
+            expect(removed.has(p), `путь ${p} в обоих списках: ${where}, коммит ${t}`).toBe(false);
+          }
+
+          for (const p of delta.added) {
+            expect(mask[p], `добавление живого ${p}: ${where}, коммит ${t}`).toBe(0);
+            mask[p] = 1;
+          }
+          for (const p of delta.removed) {
+            expect(mask[p], `удаление мёртвого ${p}: ${where}, коммит ${t}`).toBe(1);
+            mask[p] = 0;
+          }
+          expect(Array.from(mask), `${where}, коммит ${t}`).toEqual(Array.from(engine.alive));
+        }
       }
-      for (const p of delta.removed) {
-        expect(mask[p], `удаление неживого ${p} на коммите ${t}`).toBe(1);
-        mask[p] = 0;
-      }
-      expect(Array.from(mask), `коммит ${t}`).toEqual(Array.from(engine.alive));
+    }
+  });
+
+  // Переименование внутри папки: из-за --no-renames это удаление плюс создание
+  // в одном коммите. Каталог теряет последнего потомка и тут же приобретает
+  // нового — мелькание не должно просачиваться в разницу.
+  it('переименование внутри папки не трогает каталог в разнице', () => {
+    const pack = buildPack(
+      [
+        {
+          hash: 'h0',
+          authorName: 'A',
+          authorEmail: 'a@e.com',
+          timestamp: 1,
+          subject: 'c0',
+          changes: [{ path: 'src/deep/c.ts', kind: 'add', added: 5, deleted: 0, binary: false }],
+        },
+        {
+          hash: 'h1',
+          authorName: 'A',
+          authorEmail: 'a@e.com',
+          timestamp: 2,
+          subject: 'c1',
+          changes: [
+            { path: 'src/deep/c.ts', kind: 'delete', added: 0, deleted: 5, binary: false },
+            { path: 'src/deep/d.ts', kind: 'add', added: 5, deleted: 0, binary: false },
+          ],
+        },
+      ],
+      { repoName: 'd', head: 'h1' },
+    );
+    const id = (path: string) => pack.paths.indexOf(path);
+
+    const engine = new TimeEngine(pack);
+    engine.step();
+    const delta = engine.step();
+
+    expect([...delta.added]).toEqual([id('src/deep/d.ts')]);
+    expect([...delta.removed]).toEqual([id('src/deep/c.ts')]);
+    for (const ancestor of [id('src/deep'), id('src'), 0]) {
+      expect([...delta.added], `предок ${ancestor} в added`).not.toContain(ancestor);
+      expect([...delta.removed], `предок ${ancestor} в removed`).not.toContain(ancestor);
+      expect(engine.alive[ancestor], `предок ${ancestor} должен быть жив`).toBe(1);
     }
   });
 
@@ -742,28 +809,41 @@ import { ALIVE, KIND_DELETE } from '../../src/model/history.js';
   step(): TimeDelta {
     const next = this.cursorIndex + 1;
     if (next >= this.pack.meta.commitCount) {
-      return { added: EMPTY, removed: EMPTY, touched: EMPTY };
+      return { added: new Uint32Array(0), removed: new Uint32Array(0), touched: new Uint32Array(0) };
     }
 
     const { pack } = this;
-    const added: number[] = [];
-    const removed: number[] = [];
     const touched: number[] = [];
+    const touchedSeen = new Set<number>();
+    const priorAlive = new Map<number, number>();
 
     for (let e = pack.commitEventStart[next]; e < pack.commitEventStart[next + 1]; e++) {
       const path = pack.eventPath[e];
       const kind = pack.eventKind[e];
-      touched.push(path);
+      if (!touchedSeen.has(path)) {
+        touchedSeen.add(path);
+        touched.push(path);
+      }
       this.sizes[path] = pack.pathEventLines[this.linePos[e]];
 
       const own = kind === KIND_DELETE ? 0 : 1;
       if (own !== this.ownAlive[path]) {
         this.ownAlive[path] = own;
-        this.refresh(path, added, removed);
+        this.refresh(path, priorAlive);
       }
     }
 
     this.cursorIndex = next;
+
+    const added: number[] = [];
+    const removed: number[] = [];
+    for (const [path, before] of priorAlive) {
+      const after = this.alive[path];
+      if (after === before) continue; // мигнул и вернулся — это не изменение
+      if (after === 1) added.push(path);
+      else removed.push(path);
+    }
+
     return {
       added: Uint32Array.from(added),
       removed: Uint32Array.from(removed),
@@ -773,23 +853,33 @@ import { ALIVE, KIND_DELETE } from '../../src/model/history.js';
 
   /**
    * Пересчитывает живость пути и, если она изменилась, поднимается к корню:
-   * директория жива ровно пока у неё есть живые потомки.
+   * директория жива ровно пока у неё есть живые потомки. Живость каждого
+   * впервые затронутого на этом шаге пути фиксируется до изменения — это и
+   * есть база для итоговой разницы.
    */
-  private refresh(path: number, added: number[], removed: number[]): void {
+  private refresh(path: number, priorAlive: Map<number, number>): void {
+    if (!priorAlive.has(path)) priorAlive.set(path, this.alive[path]);
+
     const now = this.ownAlive[path] === 1 || this.liveChildren[path] > 0 ? 1 : 0;
     if (now === this.alive[path]) return;
 
     this.alive[path] = now;
-    if (now === 1) added.push(path);
-    else removed.push(path);
 
     if (path === 0) return; // у корня родитель — он сам
     const parent = this.pack.pathParent[path];
     if (now === 1) this.liveChildren[parent]++;
     else this.liveChildren[parent]--;
-    this.refresh(parent, added, removed);
+    this.refresh(parent, priorAlive);
   }
 ```
+
+Почему именно так, а не проще. Внутри одного коммита каталог может мигнуть:
+потерять последнего потомка от удаления и тут же приобрести нового от создания.
+Так выглядит обычное переименование файла, потому что историю мы читаем с
+`--no-renames`. Если писать в разницу каждый переход, каталог попадёт сразу в оба
+списка, и потребитель, применяющий сначала добавления, а потом удаления, сотрёт
+со сцены каталог, его родителя и корень навсегда — восстановить сможет только
+полная перемотка. Поэтому копится итог, а не переходы.
 
 - [ ] **Step 4: Запустить тесты**
 
@@ -2132,3 +2222,28 @@ git commit -m "feat(web): wire playback and transport into the scene"
 - Срез 4 «Авторы»: значки контрибьюторов, лучи к затронутым файлам, вспышки узлов. Поле `touched` в `TimeDelta` для этого уже есть и заполняется.
 - Срез 5 «Взаимодействие»: инспектор, фильтры-гашение, поиск, видимость поддеревьев. Здесь же переезд панелей на Preact и переход `SceneInput.color` со строк на числовую палитру — для пер-кадрового умножения на альфу строки неудобны.
 - Срез 6 «Упаковка»: `--export`, предупреждение о слишком большом репозитории, перф-бюджеты на синтетическом репозитории в 50k коммитов, двойной буфер позиций вместо выделения нового массива на каждое сообщение воркера.
+
+---
+
+## Как построено на самом деле
+
+План исполнен полностью, но текст задач 4 и 6–8 разошёлся с кодом: находки ревью
+меняли замысел по ходу, и авторитетен здесь git, а не этот документ. Существенные
+расхождения, чтобы читатель не искал их сам:
+
+- **Задача 4.** Бухгалтерия узлов вынесена из воркера в отдельный модуль
+  `web/layout/node-store.ts` — иначе она не тестировалась. Протокол изменён:
+  сообщение инициализации несёт полный массив родителей, сообщение обновления —
+  авторитетную маску живых вместо вывода живости из списков, поле `parentOf`
+  убрано, рождение узла стало ленивым и рекурсивным. Причина: воркер выводил
+  живость и положение родителя сам, и оба вывода были неверны при реальном
+  порядке данных.
+- **Задача 3.** Разница шага стала итогом коммита, а не набором промежуточных
+  переходов: переименование внутри папки заставляло каталог мигнуть и попасть
+  сразу в оба списка.
+- **Задача 6.** Гистограмма раскладывается по индексу коммита, а не по времени,
+  и показывает объём изменений: ось обязана совпадать с осью слайдера.
+- **Задачи 7 и 8.** Появился отдельный элемент для фатального сообщения, панели
+  собраны в колонку, чтобы строка состояния не закрывала кнопки, добавлена среда
+  с DOM для тестов панелей.
+

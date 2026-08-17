@@ -38,10 +38,15 @@ export async function loadPack(url = './api/pack'): Promise<Pack> {
   return decodePack(new Uint8Array(await response.arrayBuffer()));
 }
 
+/**
+ * Показывает фатальную ошибку в собственном элементе, а не в строке статуса:
+ * строка статуса переписывается каждым кадром воспроизведения (Task 8), и
+ * общий элемент стёр бы сообщение об аварии на следующем же кадре, оставив
+ * только красный цвет без текста.
+ */
 export function showFatal(message: string): void {
-  const status = document.getElementById('status');
-  if (!status) return;
-  status.hidden = false;
-  status.className = 'fatal';
-  status.textContent = message;
+  const fatal = document.getElementById('fatal');
+  if (!fatal) return;
+  fatal.hidden = false;
+  fatal.textContent = message;
 }

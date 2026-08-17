@@ -1,11 +1,16 @@
 import type { RawCommit } from '../git/types.js';
 import { KIND_ADD, KIND_DELETE, KIND_MODIFY, buildPathHistory } from './history.js';
 import { PathTable } from './path-table.js';
-import { FLAG_BINARY, type Author, type Pack } from './types.js';
+import { FLAG_BINARY, FLAG_SYNTHETIC, type Author, type Pack } from './types.js';
 
 export interface BuildOptions {
   repoName: string;
   head: string;
+  /**
+   * Файлы дерева HEAD. Если переданы, живые по событиям пути, которых в HEAD
+   * нет, закрываются синтетическим удалением на последнем коммите.
+   */
+  headFiles?: ReadonlySet<string>;
 }
 
 const KIND_BY_NAME = { add: KIND_ADD, modify: KIND_MODIFY, delete: KIND_DELETE } as const;
@@ -29,6 +34,9 @@ export function buildPack(commits: RawCommit[], opts: BuildOptions): Pack {
   const eventDeleted: number[] = [];
   const eventFlags: number[] = [];
 
+  // Какие пути живы по событиям: add и modify оживляют, delete хоронит.
+  const liveOwn = new Set<number>();
+
   for (let c = 0; c < commits.length; c++) {
     const commit = commits[c]!;
 
@@ -49,7 +57,10 @@ export function buildPack(commits: RawCommit[], opts: BuildOptions): Pack {
     commitSubject.push(commit.subject.slice(0, 200));
 
     for (const change of commit.changes) {
-      eventPath.push(table.intern(change.path));
+      const pathId = table.intern(change.path);
+      if (change.kind === 'delete') liveOwn.delete(pathId);
+      else liveOwn.add(pathId);
+      eventPath.push(pathId);
       eventCommit.push(c);
       eventKind.push(KIND_BY_NAME[change.kind]);
       eventAdded.push(change.added);
@@ -71,6 +82,26 @@ export function buildPack(commits: RawCommit[], opts: BuildOptions): Pack {
       if (ts < firstTs) firstTs = ts;
       if (ts > lastTs) lastTs = ts;
     }
+  }
+
+  // Сверка с деревом HEAD. При `--no-merges` удаление, записанное только
+  // в коммите слияния, теряется, и путь остаётся живым навсегда. Дописываем
+  // удаление последним коммитом — иначе HEAD показывает файлы, которых нет.
+  // Такие события помечаются FLAG_SYNTHETIC: автор последнего коммита этих
+  // файлов не трогал, и потребителям «затронутых путей» (лучи и вспышки
+  // среза 4) нужно уметь отличить их от настоящих удалений.
+  if (opts.headFiles && commits.length > 0) {
+    const lastCommit = commits.length - 1;
+    for (const pathId of liveOwn) {
+      if (opts.headFiles.has(table.paths[pathId]!)) continue;
+      eventPath.push(pathId);
+      eventCommit.push(lastCommit);
+      eventKind.push(KIND_DELETE);
+      eventAdded.push(0);
+      eventDeleted.push(0);
+      eventFlags.push(FLAG_SYNTHETIC);
+    }
+    commitEventStart[commitEventStart.length - 1] = eventPath.length;
   }
 
   const pathCount = table.size();
