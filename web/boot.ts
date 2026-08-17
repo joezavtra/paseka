@@ -22,7 +22,16 @@ export function describePack(pack: Pack): string {
 }
 
 export async function loadPack(url = './api/pack'): Promise<Pack> {
-  const response = await fetch(url);
+  let response: Response;
+  try {
+    response = await fetch(url);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new PackError(
+      `Потеряна связь с локальным сервером — он, вероятно, уже остановлен. ` +
+        `Перезапустите команду и откройте страницу заново. (${detail})`,
+    );
+  }
   if (!response.ok) {
     throw new PackError(`Сервер ответил ${response.status} на запрос данных.`);
   }
