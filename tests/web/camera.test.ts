@@ -1,0 +1,69 @@
+import { describe, it, expect } from 'vitest';
+import { Camera } from '../../web/render/camera.js';
+import { colorForPath } from '../../web/render/scene.js';
+
+describe('Camera', () => {
+  it('переводит мир в экран и обратно без потерь', () => {
+    const camera = new Camera();
+    camera.scale = 2.5;
+    camera.x = 100;
+    camera.y = -40;
+    const [sx, sy] = camera.toScreen(12, 34);
+    const [wx, wy] = camera.toWorld(sx, sy);
+    expect(wx).toBeCloseTo(12, 6);
+    expect(wy).toBeCloseTo(34, 6);
+  });
+
+  it('удерживает точку под курсором при зуме', () => {
+    const camera = new Camera();
+    const before = camera.toWorld(300, 200);
+    camera.zoomAt(300, 200, 1.7);
+    const after = camera.toWorld(300, 200);
+    expect(after[0]).toBeCloseTo(before[0], 6);
+    expect(after[1]).toBeCloseTo(before[1], 6);
+  });
+
+  it('не даёт зуму уйти за пределы разумного', () => {
+    const camera = new Camera();
+    for (let i = 0; i < 200; i++) camera.zoomAt(0, 0, 2);
+    expect(camera.scale).toBeLessThanOrEqual(40);
+    for (let i = 0; i < 400; i++) camera.zoomAt(0, 0, 0.5);
+    expect(camera.scale).toBeGreaterThanOrEqual(0.01);
+  });
+
+  it('вписывает облако точек в вид', () => {
+    const camera = new Camera();
+    camera.fit(Float32Array.from([-100, -100, 100, 100]), 800, 600);
+    const [ax, ay] = camera.toScreen(-100, -100);
+    const [bx, by] = camera.toScreen(100, 100);
+    expect(ax).toBeGreaterThan(0);
+    expect(ay).toBeGreaterThan(0);
+    expect(bx).toBeLessThan(800);
+    expect(by).toBeLessThan(600);
+  });
+
+  it('справляется с единственной точкой', () => {
+    const camera = new Camera();
+    camera.fit(Float32Array.from([5, 5]), 800, 600);
+    expect(Number.isFinite(camera.scale)).toBe(true);
+    expect(camera.scale).toBeGreaterThan(0);
+  });
+});
+
+describe('colorForPath', () => {
+  it('даёт одинаковый цвет одному расширению независимо от папки', () => {
+    expect(colorForPath('src/a.ts')).toBe(colorForPath('lib/deep/b.ts'));
+  });
+
+  it('разводит распространённые расширения по разным цветам', () => {
+    // Палитра конечна, отдельные коллизии допустимы — проверяем разброс, а не
+    // неравенство конкретной пары, иначе тест держится на значении хэша.
+    const extensions = ['ts', 'js', 'md', 'json', 'css', 'html', 'py', 'go', 'rs', 'yml'];
+    const colors = new Set(extensions.map((ext) => colorForPath(`file.${ext}`)));
+    expect(colors.size).toBeGreaterThanOrEqual(5);
+  });
+
+  it('не падает на файле без расширения', () => {
+    expect(colorForPath('Makefile')).toMatch(/^#[0-9a-f]{6}$/);
+  });
+});
