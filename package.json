@@ -3,18 +3,26 @@
   "version": "0.1.0",
   "description": "Интерактивная визуализация истории git-репозитория",
   "type": "module",
-  "bin": { "gource-reborn": "dist/node/cli/main.js" },
-  "files": ["dist"],
-  "engines": { "node": ">=20" },
+  "bin": {
+    "gource-reborn": "dist/node/cli/main.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "build": "npm run build:node && npm run build:web",
     "build:node": "tsc -p tsconfig.node.json",
     "build:web": "vite build",
     "dev": "tsx src/cli/main.ts",
     "test": "vitest run",
+    "test:e2e": "playwright test",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.1",
     "@types/d3-force": "^3.0.10",
     "@types/node": "^26.2.0",
     "d3-force": "^3.0.0",

@@ -1,11 +1,15 @@
 import { realpathSync } from 'node:fs';
 import { parseArgs as parseNodeArgs } from 'node:util';
 import { fileURLToPath } from 'node:url';
+import { dirname, join, sep } from 'node:path';
 import { inspectRepo, RepoError } from '../git/repo.js';
 import { streamCommits } from '../git/log-stream.js';
 import { buildPack } from '../model/build.js';
 import type { Pack } from '../model/types.js';
 import type { RawCommit } from '../git/types.js';
+import { startServer } from '../server/serve.js';
+import { encodePack } from '../pack/encode.js';
+import { openBrowser } from './open-browser.js';
 
 export interface CliOptions {
   repoPath: string;
@@ -89,6 +93,19 @@ export function formatStats(pack: Pack): string {
   ].join('\n');
 }
 
+/**
+ * Каталог собранного web-бандла. В опубликованном пакете этот файл лежит в
+ * dist/node/cli, то есть бандл — на два уровня выше в dist/web. При запуске из
+ * исходников через tsx файл лежит в src/cli, и путь считается от корня проекта.
+ * В обоих случаях бандл должен быть собран: `npm run build:web`.
+ */
+function resolveWebRoot(): string {
+  const here = dirname(fileURLToPath(import.meta.url));
+  return here.includes(`${sep}dist${sep}`)
+    ? join(here, '..', '..', 'web')
+    : join(here, '..', '..', 'dist', 'web');
+}
+
 export async function run(argv: string[]): Promise<number> {
   const options = parseArgs(argv);
   if (options.help) {
@@ -96,15 +113,39 @@ export async function run(argv: string[]): Promise<number> {
     return 0;
   }
   try {
-    const pack = await collectPack(options.repoPath, (n) => {
+    const packPromise = collectPack(options.repoPath, (n) => {
       process.stderr.write(`\rпрочитано коммитов: ${n}`);
     });
+
+    if (options.stats) {
+      const pack = await packPromise;
+      process.stderr.write('\r\x1b[K');
+      process.stdout.write(`${formatStats(pack)}\n`);
+      return 0;
+    }
+
+    const server = await startServer({
+      webRoot: resolveWebRoot(),
+      port: options.port,
+      getPack: async () => encodePack(await packPromise),
+    });
+
+    const pack = await packPromise;
     process.stderr.write('\r\x1b[K');
-    process.stdout.write(`${formatStats(pack)}\n`);
+    process.stdout.write(`${formatStats(pack)}\n\n${server.url}\nОстановить: Ctrl+C\n`);
+    if (options.open) openBrowser(server.url);
+
+    await new Promise<void>((done) => {
+      const stop = () => {
+        void server.close().then(done);
+      };
+      process.once('SIGINT', stop);
+      process.once('SIGTERM', stop);
+    });
     return 0;
   } catch (error) {
     if (error instanceof RepoError) {
-      process.stderr.write(`${error.message}\n`);
+      process.stderr.write(`\r\x1b[K${error.message}\n`);
       return 1;
     }
     throw error;
