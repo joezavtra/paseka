@@ -853,7 +853,15 @@ export class PathTable {
 
   private internDir(path: string): number {
     const known = this.index.get(path);
-    if (known !== undefined) return known;
+    if (known !== undefined) {
+      // Путь, хоть раз выступивший родителем, — директория, и это необратимо.
+      // В истории репозитория файл без расширения вполне может смениться
+      // директорией того же имени (`docs` → `docs/guide.md`), а мы храним
+      // объединение всех путей за всё время: без этой строки узел навсегда
+      // остался бы помечен файлом, уже имея потомков.
+      this.isDir[known] = 1;
+      return known;
+    }
     const cut = path.lastIndexOf('/');
     const parentId = cut === -1 ? 0 : this.internDir(path.slice(0, cut));
     return this.add(path, parentId, 1);
