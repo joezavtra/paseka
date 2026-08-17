@@ -30,7 +30,10 @@ export class PathTable {
 
   private internDir(path: string): number {
     const known = this.index.get(path);
-    if (known !== undefined) return known;
+    if (known !== undefined) {
+      this.isDir[known] = 1;
+      return known;
+    }
     const cut = path.lastIndexOf('/');
     const parentId = cut === -1 ? 0 : this.internDir(path.slice(0, cut));
     return this.add(path, parentId, 1);

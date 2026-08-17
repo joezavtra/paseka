@@ -44,4 +44,15 @@ describe('PathTable', () => {
     const t = new PathTable();
     expect(t.intern('')).toBe(0);
   });
+
+  it('повышает файл в директорию, когда у него появляются потомки', () => {
+    const t = new PathTable();
+    const docsId = t.intern('docs');
+    const guideId = t.intern('docs/guide.md');
+
+    expect(docsId).not.toBe(guideId);
+    expect(t.isDir[docsId]).toBe(1);
+    expect(t.isDir[guideId]).toBe(0);
+    expect(t.parent[guideId]).toBe(docsId);
+  });
 });
