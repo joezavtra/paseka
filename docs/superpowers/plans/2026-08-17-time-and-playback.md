@@ -805,15 +805,21 @@ git commit -m "feat(time): incremental step with parent liveness counters"
 
 ---
 
-### Task 4: Протокол воркера и симуляция с памятью позиций
+### Task 4: Переход на индексацию по идентификатору пути
+
+Это один неделимый рефакторинг: протокол воркера, симуляция, рёбра, рендер,
+камера и точка входа связаны одной нумерацией узлов и не могут быть заменены
+по отдельности — промежуточное состояние не собиралось бы. Поведение на экране
+после задачи остаётся прежним (статичное дерево на HEAD), меняется механизм под
+ним; существующий E2E — гарантия, что картинка не поехала.
 
 **Files:**
-- Modify: `web/layout/protocol.ts` (полная замена), `web/layout/worker.ts` (полная замена), `web/layout/graph.ts` (полная замена)
-- Test: `tests/web/graph.test.ts` (полная замена)
+- Modify: `web/layout/graph.ts` (полная замена), `web/layout/protocol.ts` (полная замена), `web/layout/worker.ts` (полная замена), `web/render/scene.ts`, `web/render/camera.ts`, `web/main.ts` (полная замена)
+- Test: `tests/web/graph.test.ts` (полная замена), `tests/web/camera.test.ts` (дополняется)
 
 **Interfaces:**
-- Consumes: `makeRng` из `src/util/rng.js`; `d3-force`
-- Produces: `radiusFor(lines: number, isDir: boolean): number`; `ActiveLinks { source: Uint32Array; target: Uint32Array }`; `buildActiveLinks(active: Uint8Array, parent: Uint32Array): ActiveLinks`; типы `LayoutInit { type:'init'; pathCount:number; seed:number }`, `LayoutUpdate { type:'update'; added:Uint32Array; removed:Uint32Array; radiusIds:Uint32Array; radiusValues:Float32Array; linkSource:Uint32Array; linkTarget:Uint32Array; parentOf:Uint32Array }`, `LayoutPositions { type:'positions'; positions:Float32Array; alpha:number }`
+- Consumes: `makeRng` из `src/util/rng.js`; `TimeEngine` и `TimeDelta` из Task 2 и 3; `d3-force`
+- Produces: `radiusFor(lines: number, isDir: boolean): number`; `ActiveLinks { source: Uint32Array; target: Uint32Array }`; `buildActiveLinks(active: Uint8Array, parent: Uint32Array): ActiveLinks`; типы `LayoutInit { type:'init'; pathCount:number; seed:number }`, `LayoutUpdate { type:'update'; added:Uint32Array; removed:Uint32Array; radiusIds:Uint32Array; radiusValues:Float32Array; linkSource:Uint32Array; linkTarget:Uint32Array; parentOf:Uint32Array }`, `LayoutPositions { type:'positions'; positions:Float32Array; alpha:number }`; `SceneInput { active: Uint8Array; positions: Float32Array; radius: Float32Array; color: string[]; linkSource: Uint32Array; linkTarget: Uint32Array }`; `Camera.fitActive(positions, active, width, height): boolean`; функция `applyDelta(delta: TimeDelta, full?: boolean)` внутри `web/main.ts` — точка, куда Task 8 подключит воспроизведение
 
 - [ ] **Step 1: Написать падающий тест**
 
@@ -1091,31 +1097,7 @@ self.onmessage = (event: MessageEvent<ToWorker>) => {
 };
 ```
 
-- [ ] **Step 6: Запустить тесты и сборку**
-
-Run: `npx vitest run tests/web/graph.test.ts && npm run build:web`
-Expected: тесты PASS (8 штук). Сборка **упадёт**: `web/main.ts` ещё использует старый протокол. Это ожидаемо, чинится в Task 6.
-
-- [ ] **Step 7: Коммит**
-
-```bash
-git add -A
-git commit -m "feat(layout): diff-based worker protocol with position memory"
-```
-
----
-
-### Task 5: Рендер и камера по маске активности
-
-**Files:**
-- Modify: `web/render/scene.ts`, `web/render/camera.ts`
-- Test: `tests/web/camera.test.ts` (дополняется)
-
-**Interfaces:**
-- Consumes: `Camera`
-- Produces: `SceneInput { active: Uint8Array; positions: Float32Array; radius: Float32Array; color: string[]; linkSource: Uint32Array; linkTarget: Uint32Array }`; `Camera.fitActive(positions: Float32Array, active: Uint8Array, width: number, height: number): boolean` — возвращает `false`, если вписывать было нечего
-
-- [ ] **Step 1: Написать падающий тест**
+- [ ] **Step 6: Написать падающий тест камеры**
 
 Дописать в конец `tests/web/camera.test.ts`:
 
@@ -1158,12 +1140,12 @@ describe('Camera.fitActive', () => {
 });
 ```
 
-- [ ] **Step 2: Запустить тест и убедиться, что он падает**
+- [ ] **Step 7: Запустить тест и убедиться, что он падает**
 
 Run: `npx vitest run tests/web/camera.test.ts`
 Expected: FAIL — `camera.fitActive is not a function`.
 
-- [ ] **Step 3: Дописать камеру**
+- [ ] **Step 8: Дописать камеру**
 
 `web/render/camera.ts` — добавить метод в класс `Camera`, сразу после `fit`:
 
@@ -1197,7 +1179,7 @@ Expected: FAIL — `camera.fitActive is not a function`.
   }
 ```
 
-- [ ] **Step 4: Обновить сцену**
+- [ ] **Step 9: Обновить сцену**
 
 `web/render/scene.ts` — заменить интерфейс `SceneInput` и тело `drawScene`, оставив `colorForPath` и палитру без изменений:
 
@@ -1249,32 +1231,7 @@ export function drawScene(
 }
 ```
 
-- [ ] **Step 5: Запустить тесты**
-
-Run: `npx vitest run tests/web/camera.test.ts && npm run typecheck`
-Expected: тесты PASS (10 штук). `typecheck` **сообщит об ошибке** в `web/main.ts`: старый `SceneInput` без поля `active`. Это ожидаемо, чинится в Task 6.
-
-- [ ] **Step 6: Коммит**
-
-```bash
-git add -A
-git commit -m "feat(render): draw by path id with an active mask"
-```
-
----
-
-### Task 6: Сборка главного потока на движке времени
-
-Задача восстанавливает работоспособность: поведение остаётся прежним — статичное дерево на HEAD, — но всё уже собрано на новых механизмах. Существующий E2E должен снова стать зелёным.
-
-**Files:**
-- Modify: `web/main.ts` (полная замена)
-
-**Interfaces:**
-- Consumes: `TimeEngine`, `buildActiveLinks`, `radiusFor`, `SceneInput`, `Camera.fitActive`, протокол воркера
-- Produces: функция `applyDelta` внутри `main.ts` — точка, куда Task 7 подключит воспроизведение
-
-- [ ] **Step 1: Заменить точку входа**
+- [ ] **Step 10: Заменить точку входа**
 
 `web/main.ts` — заменить содержимое целиком:
 
@@ -1436,21 +1393,21 @@ start().catch((error: unknown) => {
 });
 ```
 
-- [ ] **Step 2: Прогнать всё**
+- [ ] **Step 11: Прогнать всё**
 
 Run: `npx vitest run && npm run typecheck && npm run build && npx playwright test`
-Expected: PASS во всех четырёх. Существующий E2E снова зелёный: картинка та же, механизмы новые.
+Expected: PASS во всех четырёх. Существующий E2E зелёный: картинка та же, механизмы новые.
 
-- [ ] **Step 3: Коммит**
+- [ ] **Step 12: Коммит**
 
 ```bash
 git add -A
-git commit -m "feat(web): drive the scene from the time engine"
+git commit -m "feat(web): index layout and scene by path id, drive from the time engine"
 ```
 
 ---
 
-### Task 7: Воспроизведение
+### Task 5: Воспроизведение
 
 **Files:**
 - Create: `web/time/playback.ts`
@@ -1638,7 +1595,7 @@ git commit -m "feat(time): playback with speed and frame-time clamping"
 
 ---
 
-### Task 8: Гистограмма активности
+### Task 6: Гистограмма активности
 
 Перед реализацией отрисовки **обязательно загрузи skill `dataviz`** — это визуализация данных, и в проекте есть правила на такие вещи.
 
@@ -1778,7 +1735,7 @@ git commit -m "feat(ui): commit activity histogram"
 
 ---
 
-### Task 9: Панель транспорта
+### Task 7: Панель транспорта
 
 **Files:**
 - Create: `web/ui/transport.ts`
@@ -1989,7 +1946,7 @@ git commit -m "feat(ui): transport bar with slider, speed and activity histogram
 
 ---
 
-### Task 10: Подключение воспроизведения и сквозной тест
+### Task 8: Подключение воспроизведения и сквозной тест
 
 **Files:**
 - Modify: `web/main.ts`
