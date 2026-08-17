@@ -629,7 +629,10 @@ async function git(cwd: string, args: string[]): Promise<string> {
     if (err.code === 'ENOENT') {
       throw new RepoError('git не найден в PATH. Установите git и повторите.');
     }
-    throw new RepoError((err.stderr ?? err.message).trim());
+    // `??` тут не годится: пустая строка — валидное значение stderr и прошла бы
+    // фильтр, оставив пользователя с RepoError без текста.
+    const stderrText = err.stderr?.trim();
+    throw new RepoError(stderrText ? stderrText : err.message.trim());
   }
 }
 
@@ -681,29 +684,50 @@ export async function* streamCommits(root: string): AsyncGenerator<RawCommit> {
     if (stderr.length < 4096) stderr += chunk;
   });
 
-  const exit = new Promise<number>((resolveExit, rejectExit) => {
+  // `exit` никогда не отклоняется: ошибка спавна запоминается в `spawnError`,
+  // а промис в любом случае резолвится. Иначе при ENOENT/EACCES реджект случится
+  // раньше, чем кто-либо начнёт ждать `exit` (см. цикл чтения stdout ниже), и
+  // Node сочтёт его необработанным ещё до того, как мы дойдём до `await exit`.
+  let spawnError: RepoError | null = null;
+  const exit = new Promise<number>((resolveExit) => {
     child.on('error', (error: NodeJS.ErrnoException) => {
-      rejectExit(
+      spawnError =
         error.code === 'ENOENT'
           ? new RepoError('git не найден в PATH. Установите git и повторите.')
-          : new RepoError(error.message),
-      );
+          : new RepoError(error.message);
+      resolveExit(-1);
     });
     child.on('close', (code) => resolveExit(code ?? 0));
   });
 
+  // Ошибка чтения stdout (например, поток оборвался) запоминается, а не
+  // пробрасывается сразу: причина обрыва может быть в неудачном спавне —
+  // тогда приоритет у `spawnError`, — а может быть и самостоятельной проблемой
+  // при штатном коде возврата. Разбираем это ниже, после `await exit`, чтобы
+  // не выдать тихий успех с оборванной историей коммитов.
   const parser = new CommitParser();
+  let streamError: unknown = null;
   try {
     for await (const chunk of child.stdout as AsyncIterable<string>) {
       yield* parser.push(chunk);
     }
+  } catch (error) {
+    streamError = error;
   } finally {
     if (child.exitCode === null) child.kill();
   }
 
   const code = await exit;
+  // Порядок проверки — по убыванию определённости причины: сначала сбой
+  // самого спавна, затем явный ненулевой код завершения git, и только потом
+  // ошибка чтения потока при формально успешном (код 0) завершении.
+  if (spawnError) throw spawnError;
   if (code !== 0) {
     throw new RepoError(`git log завершился с кодом ${code}:\n${stderr.trim()}`);
+  }
+  if (streamError) {
+    const message = streamError instanceof Error ? streamError.message : String(streamError);
+    throw new RepoError(`Чтение вывода git log прервалось: ${message}`);
   }
   yield* parser.flush();
 }
