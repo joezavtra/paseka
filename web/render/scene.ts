@@ -1,7 +1,9 @@
 import type { Camera } from './camera.js';
 
 export interface SceneInput {
-  /** Пары x, y в мировых координатах. */
+  /** Маска живых узлов; индекс — идентификатор пути. */
+  active: Uint8Array;
+  /** Пары x, y в мировых координатах; индекс пары — идентификатор пути. */
   positions: Float32Array;
   radius: Float32Array;
   color: string[];
@@ -51,13 +53,13 @@ export function drawScene(
   }
   ctx.stroke();
 
-  const count = input.radius.length;
-  for (let i = 0; i < count; i++) {
-    const [sx, sy] = camera.toScreen(input.positions[i * 2]!, input.positions[i * 2 + 1]!);
-    const r = input.radius[i]! * camera.scale;
+  for (let path = 0; path < input.active.length; path++) {
+    if (input.active[path] === 0) continue;
+    const [sx, sy] = camera.toScreen(input.positions[path * 2]!, input.positions[path * 2 + 1]!);
+    const r = input.radius[path]! * camera.scale;
     // Отсечение: за границами вида рисовать нечего, а узлов десятки тысяч.
     if (sx + r < 0 || sy + r < 0 || sx - r > width || sy - r > height) continue;
-    ctx.fillStyle = input.color[i]!;
+    ctx.fillStyle = input.color[path]!;
     ctx.beginPath();
     ctx.arc(sx, sy, Math.max(0.5, r), 0, Math.PI * 2);
     ctx.fill();

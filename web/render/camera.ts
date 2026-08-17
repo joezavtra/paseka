@@ -55,6 +55,34 @@ export class Camera {
     this.y = height / 2 - ((minY + maxY) / 2) * this.scale;
   }
 
+  /**
+   * Вписывает в вид только активные узлы. Массив позиций покрывает все пути
+   * за всю историю, и мёртвые узлы в нём хранят старые координаты — если их
+   * учесть, масштаб определится по давно исчезнувшему углу дерева.
+   * Возвращает false, если активных узлов не оказалось: вызывающий не должен
+   * считать, что камера настроена, иначе она останется настроенной никогда.
+   */
+  fitActive(positions: Float32Array, active: Uint8Array, width: number, height: number): boolean {
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    let count = 0;
+    for (let path = 0; path < active.length; path++) {
+      if (active[path] === 0) continue;
+      const px = positions[path * 2]!;
+      const py = positions[path * 2 + 1]!;
+      if (px < minX) minX = px;
+      if (px > maxX) maxX = px;
+      if (py < minY) minY = py;
+      if (py > maxY) maxY = py;
+      count++;
+    }
+    if (count === 0) return false;
+    this.fit(Float32Array.from([minX, minY, maxX, maxY]), width, height);
+    return true;
+  }
+
   /** Вешает колесо и перетаскивание. Возвращает функцию отписки. */
   attach(canvas: HTMLCanvasElement): () => void {
     let dragging = false;

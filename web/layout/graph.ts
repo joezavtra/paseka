@@ -1,9 +1,8 @@
-export interface LayoutGraph {
-  /** Идентификаторы путей, попавших в симуляцию. */
-  nodeIds: Uint32Array;
-  /** Рёбра в локальных индексах внутри nodeIds. */
-  linkSource: Uint32Array;
-  linkTarget: Uint32Array;
+export interface ActiveLinks {
+  /** Идентификаторы путей-родителей. */
+  source: Uint32Array;
+  /** Идентификаторы путей-потомков. */
+  target: Uint32Array;
 }
 
 const DIR_RADIUS = 3;
@@ -16,33 +15,20 @@ export function radiusFor(lines: number, isDir: boolean): number {
 }
 
 /**
- * Сжимает живое подмножество путей в плотный граф для d3-force.
- * Локальные индексы нужны потому, что симуляция работает с массивом узлов,
- * а идентификаторы путей разрежены: половина дерева в любой момент мертва.
+ * Рёбра дерева между живыми узлами, в идентификаторах путей.
+ * Плотной перенумерации больше нет: она ломала бы позиции при каждом
+ * изменении состава живых узлов, а состав меняется на каждом коммите.
  */
-export function buildLayoutGraph(alive: Uint8Array, parent: Uint32Array): LayoutGraph {
-  const local = new Int32Array(alive.length).fill(-1);
-  const nodeIds: number[] = [];
-  for (let path = 0; path < alive.length; path++) {
-    if (alive[path] === 1) {
-      local[path] = nodeIds.length;
-      nodeIds.push(path);
-    }
-  }
-
-  const linkSource: number[] = [];
-  const linkTarget: number[] = [];
-  for (const path of nodeIds) {
+export function buildActiveLinks(active: Uint8Array, parent: Uint32Array): ActiveLinks {
+  const source: number[] = [];
+  const target: number[] = [];
+  for (let path = 0; path < active.length; path++) {
+    if (active[path] === 0) continue;
     const parentId = parent[path];
     if (parentId === path) continue; // корень
-    if (local[parentId] === -1) continue;
-    linkSource.push(local[parentId]);
-    linkTarget.push(local[path]);
+    if (active[parentId] === 0) continue;
+    source.push(parentId);
+    target.push(path);
   }
-
-  return {
-    nodeIds: Uint32Array.from(nodeIds),
-    linkSource: Uint32Array.from(linkSource),
-    linkTarget: Uint32Array.from(linkTarget),
-  };
+  return { source: Uint32Array.from(source), target: Uint32Array.from(target) };
 }
