@@ -104,8 +104,8 @@ git log (stream) → parse → RawCommit[] → build → Pack → encode
 Один вызов:
 
 ```
-git -c core.quotepath=false log --reverse --no-merges --no-renames --numstat \
-    --pretty=format:$'\x01%H\x1f%an\x1f%ae\x1f%aI\x1f%s'
+git -c core.quotepath=false log --reverse --no-merges --no-renames --raw --numstat \
+    --pretty=format:$'\x01%H\x1f%an\x1f%ae\x1f%at\x1f%s'
 ```
 
 `\x01` разделяет записи, `\x1f` — поля. Парсер стримовый: буферизует только хвост
@@ -113,6 +113,13 @@ git -c core.quotepath=false log --reverse --no-merges --no-renames --numstat \
 
 Решения по флагам:
 
+- `--raw --numstat` вместе — **обязательно оба**. Проверено на живом git: `--numstat`
+  и `--name-status` перекрывают друг друга, и печатается только один блок, тогда как
+  `--raw --numstat` печатает оба подряд. Один `--numstat` не даёт статуса файла:
+  строка `0	42	path` одинаково означает и «удалён», и «вырезали 42 строки».
+  Без статуса файлы никогда не умирают. Raw-блок идёт первым и является источником
+  истины по составу и статусу (`A`/`M`/`D`), numstat-блок добавляет числа строк и
+  признак бинарности (`-	-`). Raw-строки узнаются по ведущему `:`.
 - `--no-merges` — иначе изменения учитываются дважды.
 - `--no-renames` — переименование становится «умер там, родился здесь». Разбор
   `{a => b}`-форм numstat неприятен, а визуально переезд файла честно выглядит
@@ -133,7 +140,7 @@ meta       repoName, head, commitCount, firstTs, lastTs, packVersion
 paths[]    пул путей — файлы И директории, id = индекс
 authors[]  пул { name, email }
 commits    ts:U32  authorId:U32  hash[]  subject[]  eventStart:U32 (CSR)
-events     pathId:U32  kind:U8 (add|modify|delete)  added:U32  deleted:U32  flags:U8
+events     pathId:U32  commit:U32  kind:U8 (add|modify|delete)  added:U32  deleted:U32  flags:U8
 tree       parent:U32 на каждый путь
 lifetimes  CSR: путь → интервалы [рождение, смерть) в индексах коммитов
 pathEvents CSR: путь → индексы его событий + префиксная сумма строк
