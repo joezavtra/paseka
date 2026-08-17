@@ -1,4 +1,4 @@
-import { ALIVE } from '../../src/model/history.js';
+import { ALIVE, KIND_DELETE } from '../../src/model/history.js';
 import type { Pack } from '../../src/model/types.js';
 
 /** Курсор до первого коммита: не живо ничего. */
@@ -120,5 +120,61 @@ export class TimeEngine {
     if (pathCount > 0) {
       this.alive[0] = this.ownAlive[0] === 1 || this.liveChildren[0] > 0 ? 1 : 0;
     }
+  }
+
+  /**
+   * Переводит курсор на следующий коммит, обрабатывая только его события.
+   * Это горячий путь воспроизведения: стоимость — O(событий коммита + глубины
+   * затронутых путей), без обхода всего дерева.
+   */
+  step(): TimeDelta {
+    const next = this.cursorIndex + 1;
+    if (next >= this.pack.meta.commitCount) {
+      return { added: EMPTY, removed: EMPTY, touched: EMPTY };
+    }
+
+    const { pack } = this;
+    const added: number[] = [];
+    const removed: number[] = [];
+    const touched: number[] = [];
+
+    for (let e = pack.commitEventStart[next]; e < pack.commitEventStart[next + 1]; e++) {
+      const path = pack.eventPath[e];
+      const kind = pack.eventKind[e];
+      touched.push(path);
+      this.sizes[path] = pack.pathEventLines[this.linePos[e]];
+
+      const own = kind === KIND_DELETE ? 0 : 1;
+      if (own !== this.ownAlive[path]) {
+        this.ownAlive[path] = own;
+        this.refresh(path, added, removed);
+      }
+    }
+
+    this.cursorIndex = next;
+    return {
+      added: Uint32Array.from(added),
+      removed: Uint32Array.from(removed),
+      touched: Uint32Array.from(touched),
+    };
+  }
+
+  /**
+   * Пересчитывает живость пути и, если она изменилась, поднимается к корню:
+   * директория жива ровно пока у неё есть живые потомки.
+   */
+  private refresh(path: number, added: number[], removed: number[]): void {
+    const now = this.ownAlive[path] === 1 || this.liveChildren[path] > 0 ? 1 : 0;
+    if (now === this.alive[path]) return;
+
+    this.alive[path] = now;
+    if (now === 1) added.push(path);
+    else removed.push(path);
+
+    if (path === 0) return; // у корня родитель — он сам
+    const parent = this.pack.pathParent[path];
+    if (now === 1) this.liveChildren[parent]++;
+    else this.liveChildren[parent]--;
+    this.refresh(parent, added, removed);
   }
 }
