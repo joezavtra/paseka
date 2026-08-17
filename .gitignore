@@ -1,1 +1,7 @@
 .superpowers/
+node_modules/
+dist/
+coverage/
+.vite/
+test-results/
+playwright-report/
