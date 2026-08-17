@@ -17,13 +17,18 @@ export async function* streamCommits(root: string): AsyncGenerator<RawCommit> {
     if (stderr.length < 4096) stderr += chunk;
   });
 
-  const exit = new Promise<number>((resolveExit, rejectExit) => {
+  // `exit` никогда не отклоняется: ошибка спавна запоминается в `spawnError`,
+  // а промис в любом случае резолвится. Иначе при ENOENT/EACCES реджект случится
+  // раньше, чем кто-либо начнёт ждать `exit` (см. цикл чтения stdout ниже), и
+  // Node сочтёт его необработанным ещё до того, как мы дойдём до `await exit`.
+  let spawnError: RepoError | null = null;
+  const exit = new Promise<number>((resolveExit) => {
     child.on('error', (error: NodeJS.ErrnoException) => {
-      rejectExit(
+      spawnError =
         error.code === 'ENOENT'
           ? new RepoError('git не найден в PATH. Установите git и повторите.')
-          : new RepoError(error.message),
-      );
+          : new RepoError(error.message);
+      resolveExit(-1);
     });
     child.on('close', (code) => resolveExit(code ?? 0));
   });
@@ -33,11 +38,15 @@ export async function* streamCommits(root: string): AsyncGenerator<RawCommit> {
     for await (const chunk of child.stdout as AsyncIterable<string>) {
       yield* parser.push(chunk);
     }
+  } catch {
+    // При неудачном спавне stdout может оборваться с ошибкой вместо тихого
+    // завершения — разбираться в причине будем ниже, по `spawnError`/коду выхода.
   } finally {
     if (child.exitCode === null) child.kill();
   }
 
   const code = await exit;
+  if (spawnError) throw spawnError;
   if (code !== 0) {
     throw new RepoError(`git log завершился с кодом ${code}:\n${stderr.trim()}`);
   }

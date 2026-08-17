@@ -1,4 +1,6 @@
 import { describe, it, expect, afterAll } from 'vitest';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { inspectRepo, RepoError } from '../../src/git/repo.js';
 import { streamCommits } from '../../src/git/log-stream.js';
@@ -11,6 +13,13 @@ async function collect(root: string): Promise<RawCommit[]> {
   const out: RawCommit[] = [];
   for await (const commit of streamCommits(root)) out.push(commit);
   return out;
+}
+
+/** Полностью вычитывает генератор, но отбрасывает результат — нужен только для проверки ошибок. */
+async function drain(root: string): Promise<void> {
+  for await (const _commit of streamCommits(root)) {
+    // намеренно ничего не делаем — интересует только факт ошибки/её отсутствия
+  }
 }
 
 describe('streamCommits', () => {
@@ -49,6 +58,56 @@ describe('streamCommits', () => {
     const commits = await collect(root);
     expect(commits).toHaveLength(2);
     expect(commits[1]!.changes).toEqual([]);
+  });
+
+  it('даёт RepoError с текстом от git, если git log завершился ненулевым кодом', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'gource-reborn-not-a-repo-'));
+    try {
+      let caught: unknown;
+      try {
+        await drain(dir);
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toBeInstanceOf(RepoError);
+      const message = (caught as RepoError).message;
+      expect(message).not.toBe('');
+      expect(message).toMatch(/git log/);
+      expect(message).toMatch(/not a git repository/);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('репортит RepoError при недоступном git и не роняет процесс необработанным реджектом', async () => {
+    const emptyPathDir = await mkdtemp(join(tmpdir(), 'gource-reborn-empty-path-'));
+    const originalPath = process.env.PATH;
+    const unhandled: unknown[] = [];
+    const onUnhandledRejection = (reason: unknown) => {
+      unhandled.push(reason);
+    };
+    process.on('unhandledRejection', onUnhandledRejection);
+    try {
+      process.env.PATH = emptyPathDir;
+      let caught: unknown;
+      try {
+        await drain('.');
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toBeInstanceOf(RepoError);
+      expect((caught as RepoError).message).toBe(
+        'git не найден в PATH. Установите git и повторите.',
+      );
+      // Даём шанс всплыть отложенному unhandledRejection, если он всё же случится:
+      // само событие срабатывает асинхронно, через микротаск(и) после реджекта.
+      await new Promise((r) => setTimeout(r, 50));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.env.PATH = originalPath;
+      process.off('unhandledRejection', onUnhandledRejection);
+      await rm(emptyPathDir, { recursive: true, force: true });
+    }
   });
 });
 

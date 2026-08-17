@@ -23,7 +23,8 @@ async function git(cwd: string, args: string[]): Promise<string> {
     if (err.code === 'ENOENT') {
       throw new RepoError('git не найден в PATH. Установите git и повторите.');
     }
-    throw new RepoError((err.stderr ?? err.message).trim());
+    const stderrText = err.stderr?.trim();
+    throw new RepoError(stderrText ? stderrText : err.message.trim());
   }
 }
 
