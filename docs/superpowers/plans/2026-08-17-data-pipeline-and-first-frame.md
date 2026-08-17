@@ -450,7 +450,7 @@ git commit -m "feat(git): streaming parser for git log --raw --numstat"
 
 ```ts
 import { execFile } from 'node:child_process';
-import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, realpath, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
@@ -467,9 +467,14 @@ export interface FixtureCommit {
 
 const created: string[] = [];
 
-/** Создаёт временный репозиторий с заданной историей. Время коммитов детерминировано. */
+/**
+ * Создаёт временный репозиторий с заданной историей. Время коммитов детерминировано.
+ * Путь канонизируется: на macOS `/var` и `/tmp` — симлинки в `/private`, mkdtemp
+ * возвращает путь со ссылкой, а `git rev-parse --show-toplevel` — всегда настоящий.
+ * Без realpath сравнение корня репозитория со строкой из git никогда не сойдётся.
+ */
 export async function makeRepo(commits: FixtureCommit[]): Promise<string> {
-  const root = await mkdtemp(join(tmpdir(), 'gource-reborn-'));
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'gource-reborn-')));
   created.push(root);
   const git = (args: string[], env: NodeJS.ProcessEnv = {}) =>
     run('git', args, { cwd: root, env: { ...process.env, ...env } });
@@ -624,7 +629,10 @@ async function git(cwd: string, args: string[]): Promise<string> {
     if (err.code === 'ENOENT') {
       throw new RepoError('git не найден в PATH. Установите git и повторите.');
     }
-    throw new RepoError((err.stderr ?? err.message).trim());
+    // `??` тут не годится: пустая строка — валидное значение stderr и прошла бы
+    // фильтр, оставив пользователя с RepoError без текста.
+    const stderrText = err.stderr?.trim();
+    throw new RepoError(stderrText ? stderrText : err.message.trim());
   }
 }
 
@@ -676,29 +684,50 @@ export async function* streamCommits(root: string): AsyncGenerator<RawCommit> {
     if (stderr.length < 4096) stderr += chunk;
   });
 
-  const exit = new Promise<number>((resolveExit, rejectExit) => {
+  // `exit` никогда не отклоняется: ошибка спавна запоминается в `spawnError`,
+  // а промис в любом случае резолвится. Иначе при ENOENT/EACCES реджект случится
+  // раньше, чем кто-либо начнёт ждать `exit` (см. цикл чтения stdout ниже), и
+  // Node сочтёт его необработанным ещё до того, как мы дойдём до `await exit`.
+  let spawnError: RepoError | null = null;
+  const exit = new Promise<number>((resolveExit) => {
     child.on('error', (error: NodeJS.ErrnoException) => {
-      rejectExit(
+      spawnError =
         error.code === 'ENOENT'
           ? new RepoError('git не найден в PATH. Установите git и повторите.')
-          : new RepoError(error.message),
-      );
+          : new RepoError(error.message);
+      resolveExit(-1);
     });
     child.on('close', (code) => resolveExit(code ?? 0));
   });
 
+  // Ошибка чтения stdout (например, поток оборвался) запоминается, а не
+  // пробрасывается сразу: причина обрыва может быть в неудачном спавне —
+  // тогда приоритет у `spawnError`, — а может быть и самостоятельной проблемой
+  // при штатном коде возврата. Разбираем это ниже, после `await exit`, чтобы
+  // не выдать тихий успех с оборванной историей коммитов.
   const parser = new CommitParser();
+  let streamError: unknown = null;
   try {
     for await (const chunk of child.stdout as AsyncIterable<string>) {
       yield* parser.push(chunk);
     }
+  } catch (error) {
+    streamError = error;
   } finally {
     if (child.exitCode === null) child.kill();
   }
 
   const code = await exit;
+  // Порядок проверки — по убыванию определённости причины: сначала сбой
+  // самого спавна, затем явный ненулевой код завершения git, и только потом
+  // ошибка чтения потока при формально успешном (код 0) завершении.
+  if (spawnError) throw spawnError;
   if (code !== 0) {
     throw new RepoError(`git log завершился с кодом ${code}:\n${stderr.trim()}`);
+  }
+  if (streamError) {
+    const message = streamError instanceof Error ? streamError.message : String(streamError);
+    throw new RepoError(`Чтение вывода git log прервалось: ${message}`);
   }
   yield* parser.flush();
 }
@@ -824,7 +853,15 @@ export class PathTable {
 
   private internDir(path: string): number {
     const known = this.index.get(path);
-    if (known !== undefined) return known;
+    if (known !== undefined) {
+      // Путь, хоть раз выступивший родителем, — директория, и это необратимо.
+      // В истории репозитория файл без расширения вполне может смениться
+      // директорией того же имени (`docs` → `docs/guide.md`), а мы храним
+      // объединение всех путей за всё время: без этой строки узел навсегда
+      // остался бы помечен файлом, уже имея потомков.
+      this.isDir[known] = 1;
+      return known;
+    }
     const cut = path.lastIndexOf('/');
     const parentId = cut === -1 ? 0 : this.internDir(path.slice(0, cut));
     return this.add(path, parentId, 1);
@@ -1323,11 +1360,15 @@ export function buildPack(commits: RawCommit[], opts: BuildOptions): Pack {
   for (let c = 0; c < commits.length; c++) {
     const commit = commits[c]!;
 
-    let authorId = authorIndex.get(commit.authorEmail);
+    // Ключ нормализуем, а хранимый email — нет: разные git-клиенты пишут почту
+    // в разном регистре, и без этого один человек распался бы на двух авторов.
+    // В пул при этом кладём написание из первого вхождения — данные не переписываем.
+    const authorKey = commit.authorEmail.trim().toLowerCase();
+    let authorId = authorIndex.get(authorKey);
     if (authorId === undefined) {
       authorId = authors.length;
       authors.push({ name: commit.authorName, email: commit.authorEmail });
-      authorIndex.set(commit.authorEmail, authorId);
+      authorIndex.set(authorKey, authorId);
     }
 
     commitTs.push(commit.timestamp);
@@ -1415,7 +1456,7 @@ git commit -m "feat(model): assemble Pack from raw commits"
 
 ```ts
 import { describe, it, expect, afterAll } from 'vitest';
-import { collectPack, formatStats, parseArgs } from '../../src/cli/main.js';
+import { collectPack, formatStats, parseArgs, run } from '../../src/cli/main.js';
 import { makeRepo, cleanupRepos } from '../helpers/tmp-repo.js';
 
 afterAll(cleanupRepos);
@@ -1430,7 +1471,11 @@ describe('parseArgs', () => {
 
   it('читает путь и флаги', () => {
     const o = parseArgs(['/tmp/x', '--port', '9000', '--no-open', '--stats']);
-    expect(o).toEqual({ repoPath: '/tmp/x', port: 9000, open: false, stats: true });
+    expect(o).toEqual({ repoPath: '/tmp/x', port: 9000, open: false, stats: true, help: false });
+  });
+
+  it('не трогает репозиторий при --help', async () => {
+    expect(await run(['--help', '/does/not/exist'])).toBe(0);
   });
 });
 
@@ -1463,7 +1508,9 @@ Expected: FAIL — модуль `src/cli/main.js` не найден.
 `src/cli/main.ts`:
 
 ```ts
+import { realpathSync } from 'node:fs';
 import { parseArgs as parseNodeArgs } from 'node:util';
+import { fileURLToPath } from 'node:url';
 import { inspectRepo, RepoError } from '../git/repo.js';
 import { streamCommits } from '../git/log-stream.js';
 import { buildPack } from '../model/build.js';
@@ -1475,6 +1522,7 @@ export interface CliOptions {
   port: number;
   open: boolean;
   stats: boolean;
+  help: boolean;
 }
 
 const USAGE = `gource-reborn — интерактивная визуализация истории git
@@ -1494,20 +1542,21 @@ export function parseArgs(argv: string[]): CliOptions {
     options: {
       port: { type: 'string' },
       open: { type: 'boolean', default: true },
+      // node:util parseArgs не умеет автоматически превращать булев флаг
+      // `open` в отрицание по `--no-open` — заводим отдельную опцию и
+      // объединяем значения вручную.
+      'no-open': { type: 'boolean', default: false },
       stats: { type: 'boolean', default: false },
       help: { type: 'boolean', default: false },
     },
   });
 
-  if (values.help) {
-    process.stdout.write(USAGE);
-  }
-
   return {
     repoPath: positionals[0] ?? process.cwd(),
     port: values.port ? Number(values.port) : 7420,
-    open: values.open !== false,
+    open: values['no-open'] ? false : values.open !== false,
     stats: values.stats === true,
+    help: values.help === true,
   };
 }
 
@@ -1552,6 +1601,10 @@ export function formatStats(pack: Pack): string {
 
 export async function run(argv: string[]): Promise<number> {
   const options = parseArgs(argv);
+  if (options.help) {
+    process.stdout.write(USAGE);
+    return 0;
+  }
   try {
     const pack = await collectPack(options.repoPath, (n) => {
       process.stderr.write(`\rпрочитано коммитов: ${n}`);
@@ -1568,7 +1621,27 @@ export async function run(argv: string[]): Promise<number> {
   }
 }
 
-if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
+/**
+ * Определяет, запущен ли модуль напрямую как исполняемый файл (а не
+ * импортирован тестами). Сравнивать `import.meta.url` с сырым
+ * `process.argv[1]` нельзя: npm ставит бинарники симлинками
+ * (`bin.gource-reborn` в package.json), `process.argv[1]` при запуске через
+ * симлинк остаётся путём симлинка, а `import.meta.url` резолвится в
+ * реальный путь файла — строки никогда не совпадут. Поэтому разыменовываем
+ * оба пути перед сравнением; любая неудача (файла нет, путь не задан)
+ * означает «не главный модуль», а не падение CLI.
+ */
+function isMainModule(): boolean {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  try {
+    return realpathSync(entry) === fileURLToPath(import.meta.url);
+  } catch {
+    return false;
+  }
+}
+
+if (isMainModule()) {
   run(process.argv.slice(2)).then((code) => {
     process.exitCode = code;
   });
@@ -1720,6 +1793,63 @@ describe('кодек pack', () => {
     expect(() => decodePack(new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12])))
       .toThrow(PackError);
   });
+
+  // Порча собственного формата обязана давать PackError с внятным текстом,
+  // а не RangeError из конструктора typed array: обрыв ответа сервера,
+  // пакет от другой сборки и подобное попадут на экран ошибки в браузере.
+  describe('порча данных', () => {
+    const pack = buildPack(randomCommits(11, 20), { repoName: 'демо', head: 'abc1234' });
+
+    /** Пересобирает пакет с изменённым JSON-заголовком. */
+    function corruptHeader(mutate: (header: Record<string, unknown>) => void): Uint8Array {
+      const encoded = encodePack(pack);
+      const view = new DataView(encoded.buffer, encoded.byteOffset, encoded.byteLength);
+      const headerLength = view.getUint32(8, true);
+      const header = JSON.parse(
+        new TextDecoder().decode(encoded.subarray(12, 12 + headerLength)),
+      ) as Record<string, unknown>;
+      mutate(header);
+
+      const headerBytes = new TextEncoder().encode(JSON.stringify(header));
+      const dataStart = (12 + headerBytes.length + 3) & ~3;
+      const oldDataStart = (12 + headerLength + 3) & ~3;
+      const out = new Uint8Array(dataStart + (encoded.length - oldDataStart));
+      out.set(encoded.subarray(0, 12), 0);
+      new DataView(out.buffer).setUint32(8, headerBytes.length, true);
+      out.set(headerBytes, 12);
+      out.set(encoded.subarray(oldDataStart), dataStart);
+      return out;
+    }
+
+    it('отвергает усечённый буфер', () => {
+      const encoded = encodePack(pack);
+      expect(() => decodePack(encoded.subarray(0, encoded.length - 5))).toThrow(PackError);
+    });
+
+    it('отвергает заголовок без списка секций', () => {
+      expect(() => decodePack(corruptHeader((h) => delete h.sections))).toThrow(PackError);
+    });
+
+    it('отвергает секцию с завышенной длиной', () => {
+      expect(() =>
+        decodePack(
+          corruptHeader((h) => {
+            (h.sections as { length: number }[])[0]!.length = 999_999;
+          }),
+        ),
+      ).toThrow(PackError);
+    });
+
+    it('отвергает заголовок с потерянной секцией', () => {
+      expect(() =>
+        decodePack(
+          corruptHeader((h) => {
+            (h.sections as unknown[]).splice(0, 1);
+          }),
+        ),
+      ).toThrow(PackError);
+    });
+  });
 });
 ```
 
@@ -1822,6 +1952,7 @@ import {
   HEADER_OFFSET,
   MAGIC,
   PACK_VERSION,
+  SECTION_FIELDS,
   align4,
   type SectionDescriptor,
 } from './encode.js';
@@ -1861,8 +1992,34 @@ export function decodePack(input: Uint8Array): Pack {
     throw new PackError('Заголовок данных повреждён.');
   }
 
+  // Порченый заголовок от другой сборки может вообще не содержать sections —
+  // без этой проверки итерация ниже падает сырым TypeError.
+  if (!Array.isArray(header.sections)) {
+    throw new PackError('Заголовок данных повреждён: отсутствует список секций. Пересоберите визуализацию.');
+  }
+
   const dataStart = align4(HEADER_OFFSET + headerLength);
+  // Граница данных отсчитывается от dataStart на уже (при необходимости)
+  // скопированном буфере bytes, а не от исходного input.
+  const dataLength = bytes.length - dataStart;
+
   const read = (section: SectionDescriptor) => {
+    const bytesPerElement = section.kind === 'u8' ? 1 : 4;
+    const byteLength = section.length * bytesPerElement;
+    // Без этой проверки испорченная или завышенная длина секции ломает
+    // конструктор typed array сырым RangeError вместо понятного PackError.
+    // Обрыв ответа сервера выглядит именно так.
+    if (
+      typeof section.offset !== 'number' ||
+      typeof section.length !== 'number' ||
+      section.offset < 0 ||
+      byteLength < 0 ||
+      section.offset + byteLength > dataLength
+    ) {
+      throw new PackError(
+        `Заголовок данных повреждён: секция «${section.name}» выходит за границы файла. Пересоберите визуализацию.`,
+      );
+    }
     const at = bytes.byteOffset + dataStart + section.offset;
     if (section.kind === 'u8') return new Uint8Array(bytes.buffer, at, section.length);
     if (section.kind === 'i32') return new Int32Array(bytes.buffer, at, section.length);
@@ -1872,6 +2029,16 @@ export function decodePack(input: Uint8Array): Pack {
   const arrays = {} as Record<SectionDescriptor['name'], ReturnType<typeof read>>;
   for (const section of header.sections) {
     arrays[section.name] = read(section);
+  }
+
+  // Заголовок мог описывать не все обязательные секции (например, файл от
+  // более старой сборки) — без этой проверки Pack тихо уедет с undefined
+  // в одном из typed-array полей, и падение обнаружится позже и не там.
+  const missing = SECTION_FIELDS.filter((name) => !(name in arrays));
+  if (missing.length > 0) {
+    throw new PackError(
+      `Заголовок данных повреждён: отсутствуют обязательные секции (${missing.join(', ')}). Пересоберите визуализацию.`,
+    );
   }
 
   return {
@@ -1904,7 +2071,7 @@ export function decodePack(input: Uint8Array): Pack {
 - [ ] **Step 6: Запустить тесты**
 
 Run: `npx vitest run tests/pack && npm run typecheck`
-Expected: PASS, 4 теста.
+Expected: PASS, 8 тестов.
 
 - [ ] **Step 7: Коммит**
 
@@ -1989,6 +2156,47 @@ describe('startServer', () => {
     running.push(second);
     expect(second.port).not.toBe(first.port);
   });
+
+  it('сжимает пакет один раз при параллельных запросах', async () => {
+    let calls = 0;
+    const server = await startServer({
+      webRoot: await makeWebRoot(),
+      port: 0,
+      getPack: async () => {
+        calls++;
+        await new Promise((done) => setTimeout(done, 20));
+        return new Uint8Array([1, 2, 3, 4]);
+      },
+    });
+    running.push(server);
+
+    const [a, b] = await Promise.all([
+      fetch(`${server.url}/api/pack`).then((r) => r.arrayBuffer()),
+      fetch(`${server.url}/api/pack`).then((r) => r.arrayBuffer()),
+    ]);
+    expect(calls).toBe(1);
+    expect(new Uint8Array(a!)).toEqual(new Uint8Array([1, 2, 3, 4]));
+    expect(new Uint8Array(b!)).toEqual(new Uint8Array(a!));
+  });
+
+  it('пробует снова, если сборка пакета упала', async () => {
+    let attempt = 0;
+    const server = await startServer({
+      webRoot: await makeWebRoot(),
+      port: 0,
+      getPack: async () => {
+        attempt++;
+        if (attempt === 1) throw new Error('сборка не удалась');
+        return new Uint8Array([7, 7, 7]);
+      },
+    });
+    running.push(server);
+
+    expect((await fetch(`${server.url}/api/pack`)).status).toBe(500);
+    const second = await fetch(`${server.url}/api/pack`);
+    expect(second.status).toBe(200);
+    expect(new Uint8Array(await second.arrayBuffer())).toEqual(new Uint8Array([7, 7, 7]));
+  });
 });
 ```
 
@@ -2034,7 +2242,20 @@ const MIME: Record<string, string> = {
 const PORT_ATTEMPTS = 20;
 
 export async function startServer(options: ServeOptions): Promise<RunningServer> {
-  let packGzip: Buffer | null = null;
+  // Кэшируем именно промис вычисления, а не готовый буфер: между проверкой
+  // на null и присваиванием стоит await, и без этого два параллельных запроса
+  // к /api/pack успевают оба увидеть пустой кэш и оба запустить сжатие.
+  // Если getPack() падает, промис сбрасывается — иначе кэш «залипает»
+  // в сломанном состоянии и следующий запрос никогда не попробует снова.
+  let packGzip: Promise<Buffer> | null = null;
+
+  function getPackGzip(): Promise<Buffer> {
+    packGzip ??= (async () => gzipSync(await options.getPack()))().catch((error: unknown) => {
+      packGzip = null;
+      throw error;
+    });
+    return packGzip;
+  }
 
   const server = createServer((request, response) => {
     handle(request, response).catch(() => {
@@ -2047,14 +2268,14 @@ export async function startServer(options: ServeOptions): Promise<RunningServer>
     const url = new URL(request.url ?? '/', 'http://localhost');
 
     if (url.pathname === '/api/pack') {
-      packGzip ??= gzipSync(await options.getPack());
+      const body = await getPackGzip();
       response.writeHead(200, {
         'content-type': 'application/octet-stream',
         'content-encoding': 'gzip',
         'cache-control': 'no-store',
-        'content-length': String(packGzip.length),
+        'content-length': String(body.length),
       });
-      response.end(packGzip);
+      response.end(body);
       return;
     }
 
@@ -2115,7 +2336,7 @@ function listen(server: ReturnType<typeof createServer>, wanted: number): Promis
 - [ ] **Step 4: Запустить тесты**
 
 Run: `npx vitest run tests/server && npm run typecheck`
-Expected: PASS, 3 теста.
+Expected: PASS, 5 тестов.
 
 - [ ] **Step 5: Коммит**
 
@@ -2248,7 +2469,20 @@ export function describePack(pack: Pack): string {
 }
 
 export async function loadPack(url = './api/pack'): Promise<Pack> {
-  const response = await fetch(url);
+  // Перехватываем только сам запрос: типичный сбой — страница осталась
+  // открытой, а CLI остановили по Ctrl+C, и тогда fetch бросает свою
+  // ошибку с английским текстом браузера. Ошибки декодирования уже несут
+  // осмысленные русские сообщения, заворачивать их второй раз нельзя.
+  let response: Response;
+  try {
+    response = await fetch(url);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new PackError(
+      `Потеряна связь с локальным сервером — он, вероятно, уже остановлен. ` +
+        `Перезапустите команду и откройте страницу заново. (${detail})`,
+    );
+  }
   if (!response.ok) {
     throw new PackError(`Сервер ответил ${response.status} на запрос данных.`);
   }
@@ -3036,6 +3270,16 @@ async function start(): Promise<void> {
     }
   };
 
+  // Ловит и ошибку загрузки/сборки модуля воркера, и необработанное исключение
+  // внутри него: без этого раскладка молча не запускается, а узлы навсегда
+  // остаются слипшимися в точке (0, 0) — без объяснения на экране.
+  worker.onerror = (event: ErrorEvent) => {
+    // event.message бывает пустым (например, для некоторых ошибок разрешения
+    // модуля) — не показываем пользователю буквальное "undefined".
+    const detail = event.message || 'подробности недоступны';
+    showFatal(`Раскладка не запустилась: воркер аварийно завершился. ${detail}`);
+  };
+
   const init: LayoutInit = {
     type: 'init',
     nodeCount: graph.nodeIds.length,
@@ -3055,8 +3299,18 @@ async function start(): Promise<void> {
   window.addEventListener('resize', resize);
   resize();
 
+  // Если drawScene бросит исключение (например, из-за рассинхронизации данных),
+  // не даём циклу отрисовки молча остановиться на недостижимом requestAnimationFrame:
+  // показываем причину пользователю и осознанно прекращаем цикл, один раз.
   const frame = () => {
-    drawScene(ctx, camera, scene, canvas.clientWidth, canvas.clientHeight);
+    try {
+      drawScene(ctx, camera, scene, canvas.clientWidth, canvas.clientHeight);
+    } catch (error) {
+      showFatal(
+        `Не удалось отрисовать кадр: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return;
+    }
     requestAnimationFrame(frame);
   };
   requestAnimationFrame(frame);
@@ -3127,6 +3381,7 @@ export function openBrowser(url: string): void {
 `src/cli/main.ts` — заменить функцию `run` целиком и добавить импорты:
 
 ```ts
+import { access } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, sep } from 'node:path';
 import { startServer } from '../server/serve.js';
@@ -3148,13 +3403,34 @@ function resolveWebRoot(): string {
     : join(here, '..', '..', 'dist', 'web');
 }
 
+/** Проверяет, что web-бандл собран, прежде чем поднимать сервер и открывать вкладку. */
+async function hasWebBundle(webRoot: string): Promise<boolean> {
+  try {
+    await access(join(webRoot, 'index.html'));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function run(argv: string[]): Promise<number> {
   const options = parseArgs(argv);
-  try {
-    const packPromise = collectPack(options.repoPath, (n) => {
-      process.stderr.write(`\rпрочитано коммитов: ${n}`);
-    });
+  if (options.help) {
+    process.stdout.write(USAGE);
+    return 0;
+  }
 
+  const packPromise = collectPack(options.repoPath, (n) => {
+    process.stderr.write(`\rпрочитано коммитов: ${n}`);
+  });
+  // packPromise создаётся раньше, чем на него где-либо подписываются: сервер
+  // стартует до того, как pack готов, чтобы вкладка открывалась сразу. Если
+  // промис отклонится в этом промежутке — до `await packPromise` ниже, — node
+  // расценит отклонение как необработанное и уронит процесс. Гасим это здесь;
+  // настоящая обработка ошибки всё равно происходит через `await` дальше.
+  packPromise.catch(() => {});
+
+  try {
     if (options.stats) {
       const pack = await packPromise;
       process.stderr.write('\r\x1b[K');
@@ -3162,25 +3438,39 @@ export async function run(argv: string[]): Promise<number> {
       return 0;
     }
 
+    const webRoot = resolveWebRoot();
+    if (!(await hasWebBundle(webRoot))) {
+      process.stderr.write(
+        `\r\x1b[KВеб-часть не собрана: не найден ${join(webRoot, 'index.html')}.\n` +
+          'Выполните `npm run build:web` (или `npm run build`) и запустите снова.\n',
+      );
+      return 1;
+    }
+
     const server = await startServer({
-      webRoot: resolveWebRoot(),
+      webRoot,
       port: options.port,
       getPack: async () => encodePack(await packPromise),
     });
 
-    const pack = await packPromise;
-    process.stderr.write('\r\x1b[K');
-    process.stdout.write(`${formatStats(pack)}\n\n${server.url}\nОстановить: Ctrl+C\n`);
-    if (options.open) openBrowser(server.url);
+    // Сервер поднят и держит цикл событий живым — при любом исходе ниже
+    // (ошибка чтения репозитория, нормальная остановка) обязаны его закрыть,
+    // иначе процесс зависнет и не отдаст управление даже после вывода ошибки.
+    try {
+      const pack = await packPromise;
+      process.stderr.write('\r\x1b[K');
+      process.stdout.write(`${formatStats(pack)}\n\n${server.url}\nОстановить: Ctrl+C\n`);
+      if (options.open) openBrowser(server.url);
 
-    await new Promise<void>((done) => {
-      const stop = () => {
-        void server.close().then(done);
-      };
-      process.once('SIGINT', stop);
-      process.once('SIGTERM', stop);
-    });
-    return 0;
+      await new Promise<void>((done) => {
+        const stop = () => done();
+        process.once('SIGINT', stop);
+        process.once('SIGTERM', stop);
+      });
+      return 0;
+    } finally {
+      await server.close();
+    }
   } catch (error) {
     if (error instanceof RepoError) {
       process.stderr.write(`\r\x1b[K${error.message}\n`);

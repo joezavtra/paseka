@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>gource-reborn</title>
+    <style>
+      :root { color-scheme: dark; }
+      html, body { margin: 0; height: 100%; background: #0b0d12; color: #c9d1d9;
+        font: 13px/1.5 ui-sans-serif, system-ui, sans-serif; overflow: hidden; }
+      #scene { display: block; width: 100vw; height: 100vh; }
+      #status { position: fixed; left: 12px; bottom: 12px; padding: 6px 10px;
+        background: #161b22cc; border: 1px solid #30363d; border-radius: 6px; }
+      #status[hidden] { display: none; }
+      .fatal { color: #ff7b72; max-width: 60ch; }
+    </style>
+  </head>
+  <body>
+    <canvas id="scene"></canvas>
+    <div id="status">Читаю историю репозитория…</div>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>
