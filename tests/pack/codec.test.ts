@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { encodePack } from '../../src/pack/encode.js';
+import { encodePack, HEADER_OFFSET, MAGIC, PACK_VERSION, align4 } from '../../src/pack/encode.js';
 import { decodePack, PackError } from '../../src/pack/decode.js';
 import { buildPack } from '../../src/model/build.js';
 import { makeRng } from '../../src/util/rng.js';
@@ -47,6 +47,36 @@ const TYPED_FIELDS: (keyof Pack)[] = [
   'lifetimeStart', 'lifetimeBirth', 'lifetimeDeath',
 ];
 
+/**
+ * Кодирует pack, а затем пересобирает буфер вокруг испорченного заголовка:
+ * распаковывает JSON-заголовок, даёт вызывающему его исказить и снова
+ * склеивает magic + версию + новый заголовок + исходные секции данных.
+ * Так тесты порчи заголовка не зависят от внутренней раскладки encodePack.
+ */
+function corruptHeader(pack: Pack, mutate: (header: Record<string, unknown>) => void): Uint8Array {
+  const encoded = encodePack(pack);
+  const view = new DataView(encoded.buffer, encoded.byteOffset, encoded.byteLength);
+  const headerLength = view.getUint32(8, true);
+  const header = JSON.parse(
+    new TextDecoder().decode(encoded.subarray(HEADER_OFFSET, HEADER_OFFSET + headerLength)),
+  ) as Record<string, unknown>;
+  const dataStart = align4(HEADER_OFFSET + headerLength);
+  const data = encoded.subarray(dataStart);
+
+  mutate(header);
+
+  const newHeaderBytes = new TextEncoder().encode(JSON.stringify(header));
+  const newDataStart = align4(HEADER_OFFSET + newHeaderBytes.length);
+  const out = new Uint8Array(newDataStart + data.length);
+  out.set(MAGIC, 0);
+  const outView = new DataView(out.buffer);
+  outView.setUint32(4, PACK_VERSION, true);
+  outView.setUint32(8, newHeaderBytes.length, true);
+  out.set(newHeaderBytes, HEADER_OFFSET);
+  out.set(data, newDataStart);
+  return out;
+}
+
 function expectSamePack(a: Pack, b: Pack): void {
   expect(b.meta).toEqual(a.meta);
   expect(b.paths).toEqual(a.paths);
@@ -84,5 +114,38 @@ describe('кодек pack', () => {
   it('отвергает чужие данные', () => {
     expect(() => decodePack(new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12])))
       .toThrow(PackError);
+  });
+
+  it('отвергает физически усечённый буфер', () => {
+    const pack = buildPack(randomCommits(11, 10), { repoName: 'демо', head: 'abc1234' });
+    const encoded = encodePack(pack);
+    const truncated = encoded.slice(0, encoded.length - 5);
+    expect(() => decodePack(truncated)).toThrow(PackError);
+  });
+
+  it('отвергает заголовок без списка секций', () => {
+    const pack = buildPack(randomCommits(12, 10), { repoName: 'демо', head: 'abc1234' });
+    const corrupted = corruptHeader(pack, (header) => {
+      delete header.sections;
+    });
+    expect(() => decodePack(corrupted)).toThrow(PackError);
+  });
+
+  it('отвергает секцию, вылезающую за границы буфера', () => {
+    const pack = buildPack(randomCommits(13, 10), { repoName: 'демо', head: 'abc1234' });
+    const corrupted = corruptHeader(pack, (header) => {
+      const sections = header.sections as { length: number }[];
+      sections[0]!.length = 1_000_000;
+    });
+    expect(() => decodePack(corrupted)).toThrow(PackError);
+  });
+
+  it('отвергает заголовок с пропущенной обязательной секцией', () => {
+    const pack = buildPack(randomCommits(14, 10), { repoName: 'демо', head: 'abc1234' });
+    const corrupted = corruptHeader(pack, (header) => {
+      const sections = header.sections as { name: string }[];
+      header.sections = sections.filter((s) => s.name !== 'lifetimeDeath');
+    });
+    expect(() => decodePack(corrupted)).toThrow(PackError);
   });
 });

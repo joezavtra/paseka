@@ -3,6 +3,7 @@ import {
   HEADER_OFFSET,
   MAGIC,
   PACK_VERSION,
+  SECTION_FIELDS,
   align4,
   type SectionDescriptor,
 } from './encode.js';
@@ -42,8 +43,33 @@ export function decodePack(input: Uint8Array): Pack {
     throw new PackError('Заголовок данных повреждён.');
   }
 
+  // Порченый заголовок от другой сборки может вообще не содержать sections —
+  // без этой проверки итерация ниже падает сырым TypeError.
+  if (!Array.isArray(header.sections)) {
+    throw new PackError('Заголовок данных повреждён: отсутствует список секций. Пересоберите визуализацию.');
+  }
+
   const dataStart = align4(HEADER_OFFSET + headerLength);
+  // Граница данных отсчитывается от dataStart на уже (при необходимости)
+  // скопированном буфере bytes, а не от исходного input.
+  const dataLength = bytes.length - dataStart;
+
   const read = (section: SectionDescriptor) => {
+    const bytesPerElement = section.kind === 'u8' ? 1 : 4;
+    const byteLength = section.length * bytesPerElement;
+    // Без этой проверки испорченная или завышенная длина секции ломает
+    // конструктор typed array сырым RangeError вместо понятного PackError.
+    if (
+      typeof section.offset !== 'number' ||
+      typeof section.length !== 'number' ||
+      section.offset < 0 ||
+      byteLength < 0 ||
+      section.offset + byteLength > dataLength
+    ) {
+      throw new PackError(
+        `Заголовок данных повреждён: секция «${section.name}» выходит за границы файла. Пересоберите визуализацию.`,
+      );
+    }
     const at = bytes.byteOffset + dataStart + section.offset;
     if (section.kind === 'u8') return new Uint8Array(bytes.buffer, at, section.length);
     if (section.kind === 'i32') return new Int32Array(bytes.buffer, at, section.length);
@@ -53,6 +79,16 @@ export function decodePack(input: Uint8Array): Pack {
   const arrays = {} as Record<SectionDescriptor['name'], ReturnType<typeof read>>;
   for (const section of header.sections) {
     arrays[section.name] = read(section);
+  }
+
+  // Заголовок мог описывать не все обязательные секции (например, файл от
+  // более старой сборки) — без этой проверки Pack тихо уедет с undefined
+  // в одном из typed-array полей, и падение обнаружится позже и не там.
+  const missing = SECTION_FIELDS.filter((name) => !(name in arrays));
+  if (missing.length > 0) {
+    throw new PackError(
+      `Заголовок данных повреждён: отсутствуют обязательные секции (${missing.join(', ')}). Пересоберите визуализацию.`,
+    );
   }
 
   return {
