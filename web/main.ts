@@ -52,6 +52,15 @@ async function start(): Promise<void> {
       fitted = true;
     }
   };
+  // Ловит и ошибку загрузки/сборки модуля воркера, и необработанное исключение
+  // внутри него: без этого раскладка молча не запускается, а узлы навсегда
+  // остаются слипшимися в точке (0, 0) — без объяснения на экране.
+  worker.onerror = (event: ErrorEvent) => {
+    // event.message бывает пустым (например, для некоторых ошибок разрешения
+    // модуля) — не показываем пользователю буквальное "undefined".
+    const detail = event.message || 'подробности недоступны';
+    showFatal(`Раскладка не запустилась: воркер аварийно завершился. ${detail}`);
+  };
 
   const init: LayoutInit = {
     type: 'init',
@@ -72,8 +81,18 @@ async function start(): Promise<void> {
   window.addEventListener('resize', resize);
   resize();
 
+  // Если drawScene бросит исключение (например, из-за рассинхронизации данных),
+  // не даём циклу отрисовки молча остановиться на недостижимом requestAnimationFrame:
+  // показываем причину пользователю и осознанно прекращаем цикл, один раз.
   const frame = () => {
-    drawScene(ctx, camera, scene, canvas.clientWidth, canvas.clientHeight);
+    try {
+      drawScene(ctx, camera, scene, canvas.clientWidth, canvas.clientHeight);
+    } catch (error) {
+      showFatal(
+        `Не удалось отрисовать кадр: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return;
+    }
     requestAnimationFrame(frame);
   };
   requestAnimationFrame(frame);
