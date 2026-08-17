@@ -9,8 +9,12 @@
       html, body { margin: 0; height: 100%; background: #0b0d12; color: #c9d1d9;
         font: 13px/1.5 ui-sans-serif, system-ui, sans-serif; overflow: hidden; }
       #scene { display: block; width: 100vw; height: 100vh; }
+      /* pointer-events: none — это чисто информационная строка: она лежит в
+         том же углу, что и панель транспорта, и не должна перехватывать клики
+         по кнопке воспроизведения под собой. */
       #status { position: fixed; left: 12px; bottom: 12px; padding: 6px 10px;
-        background: #161b22cc; border: 1px solid #30363d; border-radius: 6px; }
+        background: #161b22cc; border: 1px solid #30363d; border-radius: 6px;
+        pointer-events: none; }
       #status[hidden] { display: none; }
       #fatal { position: fixed; left: 12px; top: 12px; padding: 8px 12px;
         background: #3d1418; border: 1px solid #ff7b72; border-radius: 6px;

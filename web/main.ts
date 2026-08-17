@@ -4,6 +4,8 @@ import { buildActiveLinks, radiusFor } from './layout/graph.js';
 import type { FromWorker, LayoutInit, LayoutUpdate } from './layout/protocol.js';
 import { Camera } from './render/camera.js';
 import { colorForPath, drawScene, type SceneInput } from './render/scene.js';
+import { Playback } from './time/playback.js';
+import { formatCommitLabel, mountTransport } from './ui/transport.js';
 import type { Pack } from '../src/model/types.js';
 
 const DIR_COLOR = '#39414d';
@@ -130,7 +132,44 @@ async function start(): Promise<void> {
     }
   }
 
+  const transportRoot = document.getElementById('transport');
+
+  const playback = new Playback(() => {
+    applyDelta(engine.step());
+    return engine.cursor < pack.meta.commitCount - 1;
+  });
+
+  const handles = transportRoot
+    ? mountTransport(transportRoot, {
+        commitCount: pack.meta.commitCount,
+        commitTs: pack.commitTs,
+        onSeek: (index: number) => {
+          playback.pause();
+          playback.reset();
+          applyDelta(engine.seek(index), true);
+          syncTransport();
+        },
+        onTogglePlay: () => {
+          // С конца истории воспроизведение начинается заново с начала.
+          if (!playback.playing && engine.cursor >= pack.meta.commitCount - 1) {
+            applyDelta(engine.seek(-1), true);
+          }
+          playback.toggle();
+          syncTransport();
+        },
+        onSpeedChange: (value: number) => {
+          playback.speed = value;
+        },
+      })
+    : null;
+
+  function syncTransport(): void {
+    handles?.setCursor(engine.cursor, formatCommitLabel(pack, engine.cursor));
+    handles?.setPlaying(playback.playing);
+  }
+
   applyDelta(engine.seek(pack.meta.commitCount - 1), true);
+  syncTransport();
 
   const resize = () => {
     const dpr = window.devicePixelRatio || 1;
@@ -143,8 +182,12 @@ async function start(): Promise<void> {
 
   // Исключение внутри кадра не должно молча остановить цикл на недостижимом
   // requestAnimationFrame: показываем причину и прекращаем цикл осознанно.
-  const frame = () => {
+  let lastFrameMs = performance.now();
+  const frame = (nowMs: number) => {
+    const dt = (nowMs - lastFrameMs) / 1000;
+    lastFrameMs = nowMs;
     try {
+      if (playback.advance(dt) > 0) syncTransport();
       drawScene(ctx, camera, scene, canvas.clientWidth, canvas.clientHeight);
     } catch (error) {
       showFatal(
