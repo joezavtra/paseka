@@ -205,3 +205,42 @@ describe('TimeEngine.step', () => {
     expect(Array.from(engine.sizes)).toEqual(Array.from(reference.sizes));
   });
 });
+
+describe('TimeEngine.step и синтетические события', () => {
+  it('не сообщает о путях, похороненных сверкой с деревом HEAD', () => {
+    const pack = buildPack(
+      [
+        {
+          hash: 'h0',
+          authorName: 'A',
+          authorEmail: 'a@e.com',
+          timestamp: 1,
+          subject: 'c0',
+          changes: [
+            { path: 'живой.txt', kind: 'add', added: 1, deleted: 0, binary: false },
+            { path: 'потерянный.txt', kind: 'add', added: 1, deleted: 0, binary: false },
+          ],
+        },
+        {
+          hash: 'h1',
+          authorName: 'A',
+          authorEmail: 'a@e.com',
+          timestamp: 2,
+          subject: 'c1',
+          changes: [{ path: 'живой.txt', kind: 'modify', added: 1, deleted: 0, binary: false }],
+        },
+      ],
+      { repoName: 'd', head: 'h1', headFiles: new Set(['живой.txt']) },
+    );
+
+    const engine = new TimeEngine(pack);
+    engine.step();
+    const delta = engine.step();
+
+    // Сверка дописала удаление «потерянного» последним коммитом: путь обязан
+    // умереть, но автор этого коммита его не касался — луча быть не должно.
+    expect([...delta.touched]).toEqual([pack.paths.indexOf('живой.txt')]);
+    expect([...delta.removed]).toContain(pack.paths.indexOf('потерянный.txt'));
+    expect(engine.alive[pack.paths.indexOf('потерянный.txt')]).toBe(0);
+  });
+});
