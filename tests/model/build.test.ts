@@ -58,6 +58,31 @@ describe('buildPack', () => {
     expect([...pack.commitAuthor]).toEqual([0, 1, 0]);
   });
 
+  it('дедуплицирует авторов по email без учёта регистра', () => {
+    const caseVariants: RawCommit[] = [
+      {
+        hash: 'ddd444',
+        authorName: 'Аня',
+        authorEmail: 'anya@example.com',
+        timestamp: 400,
+        subject: 'третий',
+        changes: [],
+      },
+      {
+        hash: 'eee555',
+        authorName: 'Anya',
+        authorEmail: '  Anya@Example.com  ',
+        timestamp: 500,
+        subject: 'четвёртый',
+        changes: [],
+      },
+    ];
+    const pack = buildPack(caseVariants, { repoName: 'demo', head: 'eee555' });
+    expect(pack.authors.length).toBe(1);
+    expect(pack.authors[0]).toEqual({ name: 'Аня', email: 'anya@example.com' });
+    expect([...pack.commitAuthor]).toEqual([0, 0]);
+  });
+
   it('раскладывает события в CSR по коммитам', () => {
     const pack = buildPack(commits, { repoName: 'demo', head: 'bbb222' });
     expect([...pack.commitEventStart]).toEqual([0, 2, 4]);

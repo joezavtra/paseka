@@ -32,11 +32,15 @@ export function buildPack(commits: RawCommit[], opts: BuildOptions): Pack {
   for (let c = 0; c < commits.length; c++) {
     const commit = commits[c]!;
 
-    let authorId = authorIndex.get(commit.authorEmail);
+    // Email — ключ дедупликации авторов: почтовые клиенты и хостинги
+    // нормализуют регистр по-разному, но это один и тот же человек. В пул
+    // при этом кладём написание из первого попавшегося коммита как есть.
+    const authorKey = commit.authorEmail.trim().toLowerCase();
+    let authorId = authorIndex.get(authorKey);
     if (authorId === undefined) {
       authorId = authors.length;
       authors.push({ name: commit.authorName, email: commit.authorEmail });
-      authorIndex.set(commit.authorEmail, authorId);
+      authorIndex.set(authorKey, authorId);
     }
 
     commitTs.push(commit.timestamp);
