@@ -7,6 +7,10 @@ import { DIR_COLOR_INDEX, drawScene, paletteIndexForPath, type SceneInput } from
 import { Playback } from './time/playback.js';
 import { formatCommitLabel, mountTransport } from './ui/transport.js';
 import type { Pack } from '../src/model/types.js';
+import { RecentEvents } from './time/recent.js';
+import { ActorField, type ActorTarget } from './render/actors.js';
+import { avatarColor, initialsFor } from './render/avatar.js';
+import type { ActorLayer, BeamLayer } from './render/scene.js';
 
 async function start(): Promise<void> {
   const canvas = document.getElementById('scene') as HTMLCanvasElement;
@@ -28,6 +32,42 @@ async function start(): Promise<void> {
       pack.pathIsDir[path] === 1 ? DIR_COLOR_INDEX : paletteIndexForPath(pack.paths[path]!);
   }
 
+  /** Сколько миллисекунд живёт луч и вспышка. */
+  const ACTIVITY_MS = 1200;
+  /** Потолок числа одновременно светящихся событий: первый коммит трогает всё. */
+  const ACTIVITY_CAPACITY = 512;
+
+  const authorCount = pack.authors.length;
+  const recent = new RecentEvents(ACTIVITY_CAPACITY, ACTIVITY_MS, authorCount);
+  const actorField = new ActorField(authorCount);
+
+  const actors: ActorLayer = {
+    positions: actorField.positions,
+    active: actorField.active,
+    color: pack.authors.map((author) => avatarColor(author.email)),
+    initials: pack.authors.map((author) => initialsFor(author.name, author.email)),
+    name: pack.authors.map((author) => author.name),
+  };
+
+  const beams: BeamLayer = {
+    count: 0,
+    fromX: new Float32Array(ACTIVITY_CAPACITY),
+    fromY: new Float32Array(ACTIVITY_CAPACITY),
+    toPath: new Uint32Array(ACTIVITY_CAPACITY),
+    author: new Uint32Array(ACTIVITY_CAPACITY),
+    strength: new Float32Array(ACTIVITY_CAPACITY),
+  };
+
+  const flash = new Float32Array(pathCount);
+  /** Пути, которым в прошлом кадре ставили свечение: гасим только их. */
+  let litPaths: number[] = [];
+
+  // Копилки центроидов заводятся один раз: выделять их на каждом кадре значило
+  // бы мусорить шестьдесят раз в секунду ради нескольких чисел.
+  const centroidX = new Float64Array(authorCount);
+  const centroidY = new Float64Array(authorCount);
+  const centroidHits = new Uint32Array(authorCount);
+
   const scene: SceneInput = {
     active: new Uint8Array(pathCount),
     positions: new Float32Array(pathCount * 2),
@@ -35,6 +75,9 @@ async function start(): Promise<void> {
     color,
     linkSource: new Uint32Array(0),
     linkTarget: new Uint32Array(0),
+    flash,
+    beams,
+    actors,
   };
 
   const camera = new Camera();
@@ -77,8 +120,16 @@ async function start(): Promise<void> {
 
   const engine = new TimeEngine(pack);
 
-  /** Неизменная часть строки состояния: имя, коммиты, файлы, авторы. */
+  /** Неизменная часть строки состояния: имя, коммиты, файлы. */
   const packDescription = describePack(pack);
+
+  let liveNodes = 0;
+  let shownAuthors = -1;
+
+  function renderStatus(): void {
+    if (!status) return;
+    status.textContent = `${packDescription} · узлов: ${liveNodes} · авторов: ${shownAuthors < 0 ? 0 : shownAuthors}`;
+  }
 
   /**
    * Переносит разницу движка времени в сцену и в воркер.
@@ -138,12 +189,22 @@ async function start(): Promise<void> {
     };
     worker.postMessage(update);
 
+    // Лучи заводятся только на шаге воспроизведения. Перемотка приходит с
+    // full = true, и вспыхивать на ней нечему: пользователь не смотрит, как
+    // работали авторы, он ищет место в истории.
+    if (!full && engine.cursor >= 0) {
+      const author = pack.commitAuthor[engine.cursor]!;
+      const now = performance.now();
+      for (const path of delta.touched) recent.push(path, author, now);
+    }
+
     if (status) {
       // Описание репозитория за сессию не меняется и посчитано один раз выше:
       // на шаге воспроизведения остаётся только пересчитать живые узлы.
       let live = 0;
       for (let path = 0; path < pathCount; path++) if (scene.active[path] === 1) live++;
-      status.textContent = `${packDescription} · узлов: ${live}`;
+      liveNodes = live;
+      renderStatus();
     }
   }
 
@@ -207,6 +268,56 @@ async function start(): Promise<void> {
     lastFrameMs = nowMs;
     try {
       if (playback.advance(dt) > 0) syncTransport();
+
+      // Гасим только то, что светилось в прошлом кадре: полный проход по всем
+      // путям на каждом кадре был бы дороже самой отрисовки лучей.
+      for (const path of litPaths) flash[path] = 0;
+      litPaths = [];
+
+      beams.count = 0;
+      centroidX.fill(0);
+      centroidY.fill(0);
+      centroidHits.fill(0);
+
+      recent.forEach(nowMs, (path, author, strength) => {
+        if (scene.active[path] !== 1) return;
+        if (flash[path] < strength) {
+          if (flash[path] === 0) litPaths.push(path);
+          flash[path] = strength;
+        }
+        centroidX[author] += scene.positions[path * 2]!;
+        centroidY[author] += scene.positions[path * 2 + 1]!;
+        centroidHits[author]++;
+
+        if (beams.count < beams.toPath.length) {
+          const i = beams.count++;
+          beams.toPath[i] = path;
+          beams.author[i] = author;
+          beams.strength[i] = strength;
+        }
+      });
+
+      const targets: ActorTarget[] = [];
+      for (let author = 0; author < authorCount; author++) {
+        const count = centroidHits[author]!;
+        if (count === 0) continue;
+        targets.push({ author, x: centroidX[author]! / count, y: centroidY[author]! / count });
+      }
+      actorField.update(dt, targets);
+
+      // Начало луча — там, где значок оказался после этого шага поля.
+      for (let i = 0; i < beams.count; i++) {
+        const author = beams.author[i]!;
+        beams.fromX[i] = actorField.positions[author * 2]!;
+        beams.fromY[i] = actorField.positions[author * 2 + 1]!;
+      }
+
+      const authorsNow = recent.activeAuthors(nowMs);
+      if (authorsNow !== shownAuthors) {
+        shownAuthors = authorsNow;
+        renderStatus();
+      }
+
       drawScene(ctx, camera, scene, canvas.clientWidth, canvas.clientHeight);
     } catch (error) {
       showFatal(

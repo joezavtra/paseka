@@ -72,6 +72,22 @@ describe('drawScene', () => {
       color: Uint8Array.from([DIR_COLOR_INDEX, 3]),
       linkSource: new Uint32Array(0),
       linkTarget: new Uint32Array(0),
+      flash: new Float32Array(2),
+      beams: {
+        count: 0,
+        fromX: new Float32Array(0),
+        fromY: new Float32Array(0),
+        toPath: new Uint32Array(0),
+        author: new Uint32Array(0),
+        strength: new Float32Array(0),
+      },
+      actors: {
+        positions: new Float32Array(0),
+        active: new Uint8Array(0),
+        color: [],
+        initials: [],
+        name: [],
+      },
     };
 
     drawScene(ctx, camera, input, 800, 600);

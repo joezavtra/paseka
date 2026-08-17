@@ -16,8 +16,7 @@ export function describePack(pack: Pack): string {
   for (let i = 0; i < pack.pathIsDir.length; i++) if (pack.pathIsDir[i] === 0) files++;
   return (
     `${pack.meta.repoName} · ${plural(pack.meta.commitCount, 'коммит', 'коммита', 'коммитов')} · ` +
-    `${plural(files, 'файл', 'файла', 'файлов')} · ` +
-    `${plural(pack.authors.length, 'автор', 'автора', 'авторов')}`
+    `${plural(files, 'файл', 'файла', 'файлов')}`
   );
 }
 
