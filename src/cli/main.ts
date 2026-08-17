@@ -1,4 +1,6 @@
+import { realpathSync } from 'node:fs';
 import { parseArgs as parseNodeArgs } from 'node:util';
+import { fileURLToPath } from 'node:url';
 import { inspectRepo, RepoError } from '../git/repo.js';
 import { streamCommits } from '../git/log-stream.js';
 import { buildPack } from '../model/build.js';
@@ -10,6 +12,7 @@ export interface CliOptions {
   port: number;
   open: boolean;
   stats: boolean;
+  help: boolean;
 }
 
 const USAGE = `gource-reborn — интерактивная визуализация истории git
@@ -38,15 +41,12 @@ export function parseArgs(argv: string[]): CliOptions {
     },
   });
 
-  if (values.help) {
-    process.stdout.write(USAGE);
-  }
-
   return {
     repoPath: positionals[0] ?? process.cwd(),
     port: values.port ? Number(values.port) : 7420,
     open: values['no-open'] ? false : values.open !== false,
     stats: values.stats === true,
+    help: values.help === true,
   };
 }
 
@@ -91,6 +91,10 @@ export function formatStats(pack: Pack): string {
 
 export async function run(argv: string[]): Promise<number> {
   const options = parseArgs(argv);
+  if (options.help) {
+    process.stdout.write(USAGE);
+    return 0;
+  }
   try {
     const pack = await collectPack(options.repoPath, (n) => {
       process.stderr.write(`\rпрочитано коммитов: ${n}`);
@@ -107,7 +111,27 @@ export async function run(argv: string[]): Promise<number> {
   }
 }
 
-if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
+/**
+ * Определяет, запущен ли модуль напрямую как исполняемый файл (а не
+ * импортирован тестами). Сравнивать `import.meta.url` с сырым
+ * `process.argv[1]` нельзя: npm ставит бинарники симлинками
+ * (`bin.gource-reborn` в package.json), `process.argv[1]` при запуске через
+ * симлинк остаётся путём симлинка, а `import.meta.url` резолвится в
+ * реальный путь файла — строки никогда не совпадут. Поэтому разыменовываем
+ * оба пути перед сравнением; любая неудача (файла нет, путь не задан)
+ * означает «не главный модуль», а не падение CLI.
+ */
+function isMainModule(): boolean {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  try {
+    return realpathSync(entry) === fileURLToPath(import.meta.url);
+  } catch {
+    return false;
+  }
+}
+
+if (isMainModule()) {
   run(process.argv.slice(2)).then((code) => {
     process.exitCode = code;
   });

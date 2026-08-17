@@ -1,5 +1,5 @@
 import { describe, it, expect, afterAll } from 'vitest';
-import { collectPack, formatStats, parseArgs } from '../../src/cli/main.js';
+import { collectPack, formatStats, parseArgs, run } from '../../src/cli/main.js';
 import { makeRepo, cleanupRepos } from '../helpers/tmp-repo.js';
 
 afterAll(cleanupRepos);
@@ -14,7 +14,20 @@ describe('parseArgs', () => {
 
   it('читает путь и флаги', () => {
     const o = parseArgs(['/tmp/x', '--port', '9000', '--no-open', '--stats']);
-    expect(o).toEqual({ repoPath: '/tmp/x', port: 9000, open: false, stats: true });
+    expect(o).toEqual({
+      repoPath: '/tmp/x',
+      port: 9000,
+      open: false,
+      stats: true,
+      help: false,
+    });
+  });
+});
+
+describe('run', () => {
+  it('--help печатает справку, возвращает 0 и не трогает репозиторий', async () => {
+    const code = await run(['--help', '/does/not/exist']);
+    expect(code).toBe(0);
   });
 });
 
