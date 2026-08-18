@@ -579,7 +579,7 @@ describe('describeNode', () => {
   it('последние коммиты идут свежими вперёд и не повторяются', () => {
     const src = info('src', 2);
     expect(src.recentCommits).toEqual([2, 1, 0]);
-    expect(info('src', 2, { commits: 2 }).recentCommits).toEqual([2, 1]);
+    expect(info('src', 2, { recent: 2 }).recentCommits).toEqual([2, 1]);
   });
 
   it('спарклайн лежит на оси индексов коммитов', () => {
@@ -650,8 +650,11 @@ export interface NodeInfo {
 export interface NodeInfoOptions {
   /** Сколько авторов оставить в топе. */
   contributors?: number;
-  /** Сколько последних коммитов перечислить. */
-  commits?: number;
+  /**
+   * Сколько последних коммитов перечислить. Не путать с полем `commits` в
+   * NodeInfo: там их общее число, здесь — длина списка.
+   */
+  recent?: number;
   /** На сколько корзин делить ось истории. */
   buckets?: number;
 }
@@ -682,7 +685,7 @@ export function describeNode(
   options: NodeInfoOptions = {},
 ): NodeInfo {
   const topContributors = options.contributors ?? 5;
-  const recentLimit = options.commits ?? 5;
+  const recentLimit = options.recent ?? 5;
   const buckets = Math.max(1, options.buckets ?? 32);
   const { pathCount, commitCount } = pack.meta;
 
@@ -1215,7 +1218,7 @@ export function projectHits(
 
 В `web/main.ts`:
 - `let searchQuery = ''` и `let searchHits = new Uint8Array(pathCount)` (маска по исходным путям, пересчитывается только при смене образца);
-- `refreshHits()` — проекция на представителей и раздача результата: `scene.hit = projected.drawnHits`, `handles?.setSearchCount(projected.count, searchQuery)`; зовётся из `applyDelta` (представители меняются при смене видимости и курсора) и из обработчика поиска;
+- `refreshHits()` — проекция на представителей и раздача результата: `scene.hit = projected.drawnHits`, `sidebar?.setSearchCount(projected.count, searchQuery)`. **Результат `mountSidebar` сейчас выбрасывается** — присвоить его (`const sidebar = sidebarRoot ? mountSidebar(...) : null`), иначе звать панель будет нечем, а `handles` в этом файле — ручки транспорта, а не панели; зовётся из `applyDelta` (представители меняются при смене видимости и курсора) и из обработчика поиска;
 - `onSearchSubmit` — пересчитать и, если `first >= 0`, увести камеру: `camera.focusOn(scene.positions[first*2], scene.positions[first*2+1], width, height, left)`, где полосы берутся тем же кодом, что и в `followLayout` (вынести общий `viewBox()`, а не считать дважды);
 - если совпадений нет — камеру не трогать вовсе.
 
