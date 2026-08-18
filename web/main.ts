@@ -8,6 +8,7 @@ import { DIR_COLOR_INDEX, paletteIndexForPath } from './render/palette.js';
 import { deriveActivity } from './render/activity.js';
 import { Playback } from './time/playback.js';
 import { formatCommitLabel, mountTransport } from './ui/transport.js';
+import { mountSidebar } from './ui/sidebar.js';
 import type { Pack } from '../src/model/types.js';
 import { RecentEvents } from './time/recent.js';
 import { ActorField } from './render/actors.js';
@@ -304,6 +305,49 @@ async function start(): Promise<void> {
   function syncTransport(): void {
     handles?.setCursor(engine.cursor, formatCommitLabel(pack, engine.cursor));
     handles?.setPlaying(playback.playing);
+  }
+
+  /** Ключ хранилища привязан к репозиторию: у разных проектов свой набор. */
+  const VISIBILITY_KEY = `gource-reborn:visibility:${pack.meta.repoName}`;
+
+  function loadVisibility(): VisibilitySpec {
+    // В приватном режиме обращение к хранилищу бросает — молча работаем без него.
+    try {
+      const raw = localStorage.getItem(VISIBILITY_KEY);
+      if (!raw) return { hidden: new Set(), collapsed: new Set() };
+      const parsed = JSON.parse(raw) as { hidden?: number[]; collapsed?: number[] };
+      return {
+        hidden: new Set(Array.isArray(parsed.hidden) ? parsed.hidden : []),
+        collapsed: new Set(Array.isArray(parsed.collapsed) ? parsed.collapsed : []),
+      };
+    } catch {
+      return { hidden: new Set(), collapsed: new Set() };
+    }
+  }
+
+  function saveVisibility(spec: VisibilitySpec): void {
+    try {
+      localStorage.setItem(
+        VISIBILITY_KEY,
+        JSON.stringify({ hidden: [...spec.hidden], collapsed: [...spec.collapsed] }),
+      );
+    } catch {
+      // Не беда: выбор просто не переживёт перезагрузку.
+    }
+  }
+
+  const sidebarRoot = document.getElementById('sidebar');
+  if (sidebarRoot) {
+    visibilitySpec = loadVisibility();
+    mountSidebar(sidebarRoot, {
+      pack,
+      initialVisibility: visibilitySpec,
+      onFilter: (spec) => applyFilter(spec, performance.now()),
+      onVisibility: (spec) => {
+        saveVisibility(spec);
+        applyVisibility(spec);
+      },
+    });
   }
 
   /**
