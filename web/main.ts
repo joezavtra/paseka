@@ -118,6 +118,27 @@ async function start(): Promise<void> {
   /** Маска по исходным путям; пересчитывается только при смене образца, а не на каждый кадр. */
   let searchHits: Uint8Array = new Uint8Array(pathCount);
 
+  /**
+   * Получал ли путь настоящую позицию от раскладки — не то же самое, что
+   * «координата не нулевая»: узел может законно осесть у мирового нуля, а
+   * `scene.positions` заведён нулями с самого начала и остаётся таким для
+   * только что родившегося пути, пока воркер не ответил. Сбрасывается в
+   * applyDelta для рождающихся путей (кроме тех, кому досталась позиция
+   * родителя — унаследованная позиция настоящая, а не заглушка), поднимается
+   * в обработчике сообщений воркера для всех рисуемых путей разом: ответ
+   * воркера означает, что NodeStore.applyUpdate завёл узел каждому из них
+   * структурно (см. web/layout/node-store.ts), а не только перечисленным во
+   * `added`.
+   */
+  let placed: Uint8Array = new Uint8Array(pathCount);
+  /**
+   * Путь, для которого поиск попросил камеру, но позиции у него ещё не было:
+   * пользователь нажал Enter — доля секунды ожидания честнее молчания.
+   * Разрешается ближайшим сообщением воркера, которое поднимет `placed` для
+   * этого пути (см. ниже), либо новым поиском, который его заменит или снимет.
+   */
+  let pendingFocus: number | null = null;
+
   const camera = new Camera();
   camera.attach(canvas);
 
@@ -226,10 +247,52 @@ async function start(): Promise<void> {
     return refreshHits();
   }
 
+  /**
+   * Пробует увести камеру к путю. Возвращает `true`, если вопрос закрыт —
+   * либо камера действительно поехала, либо ехать было незачем (путь погашен
+   * фильтром/скрытием, или координаты испорчены не из-за того, что раскладка
+   * ещё не ответила), — и `false`, если решение отложено: путь рисуется, но
+   * `placed` для него ещё не поднят, и вызывающий обязан попробовать снова на
+   * ближайшем сообщении воркера.
+   */
+  function attemptFocus(path: number): boolean {
+    if (scene.active[path] !== 1) return true; // не рисуется — ждать нечего
+    if (placed[path] !== 1) return false; // рисуется, но настоящей позиции ещё нет — ждём воркер
+    const fx = scene.positions[path * 2]!;
+    const fy = scene.positions[path * 2 + 1]!;
+    // Симметрично клику по холсту: focusOn необратимо объявляет камеру
+    // управляемой вручную, и негодные координаты увезли бы её туда навсегда —
+    // автовписывание больше не вернёт вид. camera.scale тоже проверяем: клик
+    // получает эту гарантию транзитивно через toWorld, а здесь координаты
+    // берутся прямо из scene.positions и ничего о камере не знают.
+    if (!Number.isFinite(fx) || !Number.isFinite(fy) || !Number.isFinite(camera.scale)) {
+      console.warn('Поиск: координаты найденного узла негодные, камера не трогается.', {
+        path,
+        fx,
+        fy,
+        scale: camera.scale,
+      });
+      return true;
+    }
+    const { left, width, height } = viewBox();
+    camera.focusOn(fx, fy, width, height, left);
+    return true;
+  }
+
   const worker = new Worker(new URL('./layout/worker.ts', import.meta.url), { type: 'module' });
   worker.onmessage = (event: MessageEvent<FromWorker>) => {
     if (event.data.type !== 'positions') return;
     scene.positions = event.data.positions;
+    // NodeStore.applyUpdate заводит узел структурно для каждого рисуемого
+    // пути, а не только для перечисленных в added (см.
+    // web/layout/node-store.ts) — этот ответ воркера гарантирует, что у
+    // любого активного пути теперь есть настоящая позиция, а не заглушка.
+    for (let path = 0; path < pathCount; path++) {
+      if (scene.active[path] === 1) placed[path] = 1;
+    }
+    // Поиск попросил камеру о пути, у которого ещё не было позиции, — теперь
+    // она, возможно, появилась.
+    if (pendingFocus !== null && attemptFocus(pendingFocus)) pendingFocus = null;
     // Вписываем на каждом сообщении раскладки, а не однажды по порогу
     // температуры: дерево стартует плотным комком у родителей и расходится
     // за несколько сообщений — защёлкнутый масштаб оставил бы первый кадр
@@ -422,6 +485,11 @@ async function start(): Promise<void> {
     // в мировом нуле: иначе на каждый появившийся узел будет вспышка в центре
     // сцены на один кадр. Годится только уже стоявший родитель — если он сам
     // родился в этой же разнице, у него ещё нет настоящей позиции.
+    //
+    // Рождающийся путь по умолчанию не placed: заглушка 0,0 в scene.positions
+    // (или унаследованная позиция родителя ниже) — не то же самое, что ответ
+    // воркера, и focusOn не должен считать её надёжной.
+    for (const path of born) placed[path] = 0;
     const bornThisDelta = new Set(born);
     for (const path of born) {
       const parentId = pack.pathParent[path]!;
@@ -430,6 +498,11 @@ async function start(): Promise<void> {
       if (bornThisDelta.has(parentId)) continue;
       scene.positions[path * 2] = scene.positions[parentId * 2]!;
       scene.positions[path * 2 + 1] = scene.positions[parentId * 2 + 1]!;
+      // Унаследованная позиция настоящая ровно настолько, насколько настоящая
+      // позиция родителя: если сам родитель ещё не placed (редкий, но
+      // возможный случай — воркер не успел ответить и на него), унаследованная
+      // копия так же не заслуживает доверия.
+      placed[path] = placed[parentId]!;
     }
 
     const links = buildActiveLinks(scene.active, pack.pathParent);
@@ -544,22 +617,14 @@ async function start(): Promise<void> {
         const { first } = applySearch(query);
         // Нуль совпадений — камеру не трогаем вовсе: дёргать вид ради пустого
         // результата было бы хуже, чем оставить его как есть.
-        if (first < 0) return;
-        const fx = scene.positions[first * 2]!;
-        const fy = scene.positions[first * 2 + 1]!;
-        // Симметрично клику по холсту: focusOn необратимо объявляет камеру
-        // управляемой вручную, и негодные координаты увезли бы её туда
-        // навсегда — автовписывание больше не вернёт вид.
-        if (!Number.isFinite(fx) || !Number.isFinite(fy)) {
-          console.warn('Поиск: координаты найденного узла ещё не готовы, камера не трогается.', {
-            first,
-            fx,
-            fy,
-          });
+        if (first < 0) {
+          pendingFocus = null;
           return;
         }
-        const { left, width, height } = viewBox();
-        camera.focusOn(fx, fy, width, height, left);
+        // attemptFocus сам решает: едет камера сразу, или узел ещё не получил
+        // позицию от раскладки — тогда решение откладывается до ближайшего
+        // сообщения воркера (см. worker.onmessage выше).
+        pendingFocus = attemptFocus(first) ? null : first;
       },
     });
   }
