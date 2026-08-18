@@ -1,6 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import {
+  DEFAULT_FOLDER_LABEL_LIMIT,
   DEFAULT_LABEL_LIMIT,
+  FOLDER_LABEL_ALPHA,
+  MIN_FLASH_LABEL,
   MAX_LABELED_HITS,
   MIN_LABEL_RADIUS_PX,
   labelFor,
@@ -93,6 +96,8 @@ function baseInput(count: number): LabelInput {
     alpha: new Float32Array(count).fill(1),
     hit: new Uint8Array(count),
     hitCount: 0,
+    isDir: new Uint8Array(count),
+    flash: new Float32Array(count),
   };
 }
 
@@ -108,13 +113,27 @@ function markHits(input: LabelInput, ...paths: number[]): void {
   input.hitCount = count;
 }
 
+/**
+ * Только идентификаторы отобранных путей: большинству проверок ниже важен
+ * состав и порядок подписей, а не их яркость — она проверяется отдельно.
+ */
+function pick(
+  input: LabelInput,
+  camera: LabelCamera,
+  width: number,
+  height: number,
+  options?: Parameters<typeof selectLabels>[4],
+): number[] {
+  return selectLabels(input, camera, width, height, options).map((label) => label.path);
+}
+
 describe('selectLabels', () => {
   it('подписывается только рисуемый узел (active === 1)', () => {
     const input = baseInput(2);
     input.radius[0] = 20; // крупный — подписался бы сам по себе
     input.radius[1] = 20;
     input.active[1] = 0;
-    const result = selectLabels(input, identityCamera, WIDTH, HEIGHT);
+    const result = pick(input, identityCamera, WIDTH, HEIGHT);
     expect(result).toEqual([0]);
   });
 
@@ -123,7 +142,7 @@ describe('selectLabels', () => {
     input.radius[0] = 20;
     input.positions[0] = -61; // левее экрана больше, чем на 40 px с учётом радиуса
     input.positions[1] = 0;
-    const result = selectLabels(input, identityCamera, WIDTH, HEIGHT);
+    const result = pick(input, identityCamera, WIDTH, HEIGHT);
     expect(result).toEqual([]);
   });
 
@@ -132,7 +151,7 @@ describe('selectLabels', () => {
     input.radius[0] = 20;
     input.positions[0] = 0;
     input.positions[1] = -61; // выше экрана больше, чем на 40 px с учётом радиуса
-    const result = selectLabels(input, identityCamera, WIDTH, HEIGHT);
+    const result = pick(input, identityCamera, WIDTH, HEIGHT);
     expect(result).toEqual([]);
   });
 
@@ -141,7 +160,7 @@ describe('selectLabels', () => {
     input.radius[0] = 20;
     input.positions[0] = WIDTH + 61; // правее экрана больше, чем на 40 px с учётом радиуса
     input.positions[1] = 0;
-    const result = selectLabels(input, identityCamera, WIDTH, HEIGHT);
+    const result = pick(input, identityCamera, WIDTH, HEIGHT);
     expect(result).toEqual([]);
   });
 
@@ -150,7 +169,7 @@ describe('selectLabels', () => {
     input.radius[0] = 20;
     input.positions[0] = 0;
     input.positions[1] = HEIGHT + 61; // ниже экрана больше, чем на 40 px с учётом радиуса
-    const result = selectLabels(input, identityCamera, WIDTH, HEIGHT);
+    const result = pick(input, identityCamera, WIDTH, HEIGHT);
     expect(result).toEqual([]);
   });
 
@@ -161,12 +180,12 @@ describe('selectLabels', () => {
     // поле было обнулено (или иначе искажено), этот узел уже не прошёл бы.
     input.positions[0] = -60;
     input.positions[1] = 0;
-    const atEdge = selectLabels(input, identityCamera, WIDTH, HEIGHT);
+    const atEdge = pick(input, identityCamera, WIDTH, HEIGHT);
     expect(atEdge).toEqual([0]);
 
     // На 1px дальше та же арифметика уже выводит узел за поле.
     input.positions[0] = -61;
-    const beyondEdge = selectLabels(input, identityCamera, WIDTH, HEIGHT);
+    const beyondEdge = pick(input, identityCamera, WIDTH, HEIGHT);
     expect(beyondEdge).toEqual([]);
   });
 
@@ -174,7 +193,7 @@ describe('selectLabels', () => {
     const camera = scaledCamera(5); // мировой радиус 2 * scale 5 = экранный 10 ≥ порога 9
     const input = baseInput(1);
     input.radius[0] = 2; // мировой радиус сам по себе меньше порога
-    const result = selectLabels(input, camera, WIDTH, HEIGHT);
+    const result = pick(input, camera, WIDTH, HEIGHT);
     expect(result).toEqual([0]);
   });
 
@@ -182,7 +201,7 @@ describe('selectLabels', () => {
     const camera = scaledCamera(0.1); // мировой радиус 50 * scale 0.1 = экранный 5 < порога
     const input = baseInput(1);
     input.radius[0] = 50;
-    const result = selectLabels(input, camera, WIDTH, HEIGHT);
+    const result = pick(input, camera, WIDTH, HEIGHT);
     expect(result).toEqual([]);
   });
 
@@ -194,7 +213,7 @@ describe('selectLabels', () => {
     input.positions[1] = 0;
     // Экранная позиция: 1000*0.5 + 300 = 800, экранный радиус 20*0.5=10 —
     // sx - r = 790 ≤ width(800) + 40, узел виден.
-    const result = selectLabels(input, camera, WIDTH, HEIGHT);
+    const result = pick(input, camera, WIDTH, HEIGHT);
     expect(result).toEqual([0]);
   });
 
@@ -204,28 +223,28 @@ describe('selectLabels', () => {
     input.radius[0] = 20;
     input.positions[0] = 0; // в мировых координатах как будто в кадре
     input.positions[1] = 0;
-    const result = selectLabels(input, camera, WIDTH, HEIGHT);
+    const result = pick(input, camera, WIDTH, HEIGHT);
     expect(result).toEqual([]);
   });
 
   it('крупный узел (экранный радиус ≥ MIN_LABEL_RADIUS_PX) подписывается сам по себе', () => {
     const input = baseInput(1);
     input.radius[0] = MIN_LABEL_RADIUS_PX;
-    const result = selectLabels(input, identityCamera, WIDTH, HEIGHT);
+    const result = pick(input, identityCamera, WIDTH, HEIGHT);
     expect(result).toEqual([0]);
   });
 
   it('мелкий узел не подписывается сам по себе', () => {
     const input = baseInput(1);
     input.radius[0] = MIN_LABEL_RADIUS_PX - 0.5;
-    const result = selectLabels(input, identityCamera, WIDTH, HEIGHT);
+    const result = pick(input, identityCamera, WIDTH, HEIGHT);
     expect(result).toEqual([]);
   });
 
   it('мелкий узел подписывается, если он наведён', () => {
     const input = baseInput(1);
     input.radius[0] = 1;
-    const result = selectLabels(input, identityCamera, WIDTH, HEIGHT, { hovered: 0 });
+    const result = pick(input, identityCamera, WIDTH, HEIGHT, { hovered: 0 });
     expect(result).toEqual([0]);
   });
 
@@ -233,7 +252,7 @@ describe('selectLabels', () => {
     const input = baseInput(1);
     input.radius[0] = 1;
     markHits(input, 0);
-    const result = selectLabels(input, identityCamera, WIDTH, HEIGHT);
+    const result = pick(input, identityCamera, WIDTH, HEIGHT);
     expect(result).toEqual([0]);
   });
 
@@ -241,7 +260,7 @@ describe('selectLabels', () => {
     const input = baseInput(1);
     input.radius[0] = 20; // крупный — подписался бы, если бы не гашение
     input.alpha[0] = 0.12;
-    const result = selectLabels(input, identityCamera, WIDTH, HEIGHT);
+    const result = pick(input, identityCamera, WIDTH, HEIGHT);
     expect(result).toEqual([]);
   });
 
@@ -249,7 +268,7 @@ describe('selectLabels', () => {
     const input = baseInput(1);
     input.radius[0] = 1;
     input.alpha[0] = 0.12;
-    const result = selectLabels(input, identityCamera, WIDTH, HEIGHT, { hovered: 0 });
+    const result = pick(input, identityCamera, WIDTH, HEIGHT, { hovered: 0 });
     expect(result).toEqual([0]);
   });
 
@@ -258,7 +277,7 @@ describe('selectLabels', () => {
     input.radius[0] = 1;
     input.alpha[0] = 0.12;
     markHits(input, 0);
-    const result = selectLabels(input, identityCamera, WIDTH, HEIGHT);
+    const result = pick(input, identityCamera, WIDTH, HEIGHT);
     expect(result).toEqual([]);
   });
 
@@ -273,7 +292,7 @@ describe('selectLabels', () => {
     input.radius[2] = 1;
     // 3: крупный, но меньше узла 0.
     input.radius[3] = 15;
-    const result = selectLabels(input, identityCamera, WIDTH, HEIGHT, { hovered: 2 });
+    const result = pick(input, identityCamera, WIDTH, HEIGHT, { hovered: 2 });
     expect(result).toEqual([2, 1, 0, 3]);
   });
 
@@ -284,7 +303,7 @@ describe('selectLabels', () => {
     const count = MAX_LABELED_HITS + 1;
     const input = baseInput(count);
     markHits(input, ...Array.from({ length: count }, (_, i) => i));
-    expect(selectLabels(input, identityCamera, WIDTH, HEIGHT)).toEqual([]);
+    expect(pick(input, identityCamera, WIDTH, HEIGHT)).toEqual([]);
   });
 
   it('пока совпадений немного, мелкие найденные подписываются все', () => {
@@ -292,7 +311,7 @@ describe('selectLabels', () => {
     // другое, чем написано в MAX_LABELED_HITS.
     const input = baseInput(MAX_LABELED_HITS);
     markHits(input, ...Array.from({ length: MAX_LABELED_HITS }, (_, i) => i));
-    expect(selectLabels(input, identityCamera, WIDTH, HEIGHT)).toHaveLength(MAX_LABELED_HITS);
+    expect(pick(input, identityCamera, WIDTH, HEIGHT)).toHaveLength(MAX_LABELED_HITS);
   });
 
   it('на многих совпадениях найденный крупный узел не лезет вперёд более крупных', () => {
@@ -307,7 +326,7 @@ describe('selectLabels', () => {
     input.radius[1] = 30;
     const hits = Array.from({ length: count }, (_, i) => i).filter((i) => i !== 1);
     markHits(input, ...hits);
-    const result = selectLabels(input, identityCamera, WIDTH, HEIGHT);
+    const result = pick(input, identityCamera, WIDTH, HEIGHT);
     // Первым идёт самый крупный, а не найденный: за порогом находка не даёт
     // ни подписи мелкому, ни очереди крупному.
     expect(result).toEqual([1, 0]);
@@ -320,7 +339,7 @@ describe('selectLabels', () => {
     input.radius[0] = 1;
     input.hit[0] = 1;
     input.hitCount = 0;
-    expect(selectLabels(input, identityCamera, WIDTH, HEIGHT)).toEqual([]);
+    expect(pick(input, identityCamera, WIDTH, HEIGHT)).toEqual([]);
   });
 
   it('внутри одной группы приоритета сортирует по радиусу, а не по порядку вставки', () => {
@@ -334,7 +353,7 @@ describe('selectLabels', () => {
     input.radius[0] = 10;
     input.radius[1] = 20;
     input.radius[2] = 15;
-    const result = selectLabels(input, identityCamera, WIDTH, HEIGHT);
+    const result = pick(input, identityCamera, WIDTH, HEIGHT);
     expect(result).toEqual([1, 2, 0]);
   });
 
@@ -348,7 +367,7 @@ describe('selectLabels', () => {
     input.radius[2] = 9;
     input.radius[3] = 25;
     input.radius[4] = 18;
-    const result = selectLabels(input, identityCamera, WIDTH, HEIGHT, { limit: 3 });
+    const result = pick(input, identityCamera, WIDTH, HEIGHT, { limit: 3 });
     // По убыванию радиуса: 1(30), 3(25), 4(18), 0(12), 2(9) — уцелеть должны
     // именно первые три из этого порядка.
     expect(result).toEqual([1, 3, 4]);
@@ -358,7 +377,131 @@ describe('selectLabels', () => {
     const count = DEFAULT_LABEL_LIMIT + 5;
     const input = baseInput(count);
     for (let i = 0; i < count; i++) input.radius[i] = 20;
-    const result = selectLabels(input, identityCamera, WIDTH, HEIGHT);
+    const result = pick(input, identityCamera, WIDTH, HEIGHT);
     expect(result).toHaveLength(DEFAULT_LABEL_LIMIT);
+  });
+});
+
+describe('подписи папок и изменённых файлов', () => {
+  /** Яркость подписи пути или undefined, если он не подписан вовсе. */
+  function alphaOf(picks: { path: number; alpha: number }[], path: number): number | undefined {
+    return picks.find((label) => label.path === path)?.alpha;
+  }
+
+  it('папка подписывается при любом размере, а мелкий файл — нет', () => {
+    const input = baseInput(2);
+    input.isDir[0] = 1;
+    input.radius[0] = 1; // мелкая папка: сама по себе раньше не подписывалась
+    input.radius[1] = 1; // мелкий файл
+    const result = pick(input, identityCamera, WIDTH, HEIGHT);
+    expect(result).toEqual([0]);
+  });
+
+  it('подпись обычной папки бледнее подписи файла', () => {
+    const input = baseInput(2);
+    input.isDir[0] = 1;
+    input.radius[0] = 1;
+    input.radius[1] = MIN_LABEL_RADIUS_PX; // крупный файл, подписывается сам
+    const picks = selectLabels(input, identityCamera, WIDTH, HEIGHT);
+    expect(alphaOf(picks, 0)).toBe(FOLDER_LABEL_ALPHA);
+    expect(alphaOf(picks, 1)).toBe(1);
+  });
+
+  it('крупная папка подписывается в полную силу', () => {
+    const input = baseInput(1);
+    input.isDir[0] = 1;
+    input.radius[0] = MIN_LABEL_RADIUS_PX;
+    expect(alphaOf(selectLabels(input, identityCamera, WIDTH, HEIGHT), 0)).toBe(1);
+  });
+
+  it('наведённая папка подписывается в полную силу, а не бледно', () => {
+    const input = baseInput(1);
+    input.isDir[0] = 1;
+    input.radius[0] = 1;
+    const picks = selectLabels(input, identityCamera, WIDTH, HEIGHT, { hovered: 0 });
+    expect(alphaOf(picks, 0)).toBe(1);
+  });
+
+  it('погашенная фильтром папка молчит, как и любой другой узел', () => {
+    const input = baseInput(1);
+    input.isDir[0] = 1;
+    input.alpha[0] = 0.12;
+    expect(pick(input, identityCamera, WIDTH, HEIGHT)).toEqual([]);
+  });
+
+  it('изменённый файл подписывается, пока горит вспышка', () => {
+    const input = baseInput(1);
+    input.radius[0] = 1; // мелкий: без вспышки не подписался бы
+    input.flash[0] = 0.8;
+    expect(pick(input, identityCamera, WIDTH, HEIGHT)).toEqual([0]);
+
+    input.flash[0] = MIN_FLASH_LABEL / 2;
+    expect(pick(input, identityCamera, WIDTH, HEIGHT)).toEqual([]);
+  });
+
+  it('подпись изменённого файла гаснет вместе с его вспышкой', () => {
+    const input = baseInput(1);
+    input.radius[0] = 1;
+    input.flash[0] = 0.9;
+    const bright = alphaOf(selectLabels(input, identityCamera, WIDTH, HEIGHT), 0)!;
+    input.flash[0] = 0.2;
+    const faded = alphaOf(selectLabels(input, identityCamera, WIDTH, HEIGHT), 0)!;
+    expect(bright).toBeCloseTo(0.9, 5);
+    expect(faded).toBeCloseTo(0.2, 5);
+  });
+
+  it('вспышка свёрнутой папки не превращает её подпись во временную', () => {
+    // Свёрнутая папка вспыхивает за всё, что внутри; её имя и так на экране,
+    // и мигать вместе со вспышкой оно не должно.
+    const input = baseInput(1);
+    input.isDir[0] = 1;
+    input.radius[0] = 1;
+    input.flash[0] = 0.9;
+    expect(alphaOf(selectLabels(input, identityCamera, WIDTH, HEIGHT), 0)).toBe(FOLDER_LABEL_ALPHA);
+  });
+
+  it('изменённый файл важнее крупного, но уступает наведённому и найденному', () => {
+    const input = baseInput(4);
+    input.radius[0] = 40; // крупный файл
+    input.radius[1] = 1;
+    input.flash[1] = 0.9; // только что изменён
+    input.radius[2] = 1;
+    markHits(input, 2); // найден поиском
+    input.radius[3] = 1; // наведённый
+    const result = pick(input, identityCamera, WIDTH, HEIGHT, { hovered: 3 });
+    expect(result).toEqual([3, 2, 1, 0]);
+  });
+
+  it('папки идут последними: они карта, а не ответ на жест', () => {
+    const input = baseInput(2);
+    input.isDir[0] = 1;
+    input.radius[0] = 1;
+    input.radius[1] = 40; // крупный файл
+    expect(pick(input, identityCamera, WIDTH, HEIGHT)).toEqual([1, 0]);
+  });
+
+  it('пределы у папок и файлов раздельные', () => {
+    // Файлов и папок больше своих пределов: каждый вид обязан получить свою
+    // долю подписей целиком, не отнимая места у другого.
+    const files = 6;
+    const folders = 5;
+    const input = baseInput(files + folders);
+    for (let path = 0; path < files; path++) input.radius[path] = 40;
+    for (let path = files; path < files + folders; path++) {
+      input.isDir[path] = 1;
+      input.radius[path] = 1;
+    }
+    const result = selectLabels(input, identityCamera, WIDTH, HEIGHT, {
+      limit: 2,
+      folderLimit: 3,
+    });
+    const dirs = result.filter((label) => input.isDir[label.path] === 1);
+    expect(result.length - dirs.length).toBe(2);
+    expect(dirs).toHaveLength(3);
+  });
+
+  it('предел папок по умолчанию не равен файловому', () => {
+    // Иначе дерево из сотни каталогов оставило бы крупные файлы без подписей.
+    expect(DEFAULT_FOLDER_LABEL_LIMIT).toBeGreaterThan(DEFAULT_LABEL_LIMIT);
   });
 });

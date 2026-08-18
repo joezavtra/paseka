@@ -147,6 +147,7 @@ function sceneWithTwoNodes(): SceneInput {
       count: 0,
       path: new Uint32Array(2),
       text: [],
+      alpha: Float32Array.from(Array(16).fill(1)),
     },
   };
 }
@@ -378,6 +379,7 @@ describe('drawScene', () => {
       count: 1,
       path: Uint32Array.from([1, 0]),
       text: ['b.ts · 3 файла'],
+      alpha: Float32Array.from(Array(16).fill(1)),
     };
 
     drawScene(ctx, new Camera(), input, 800, 600);
@@ -386,12 +388,32 @@ describe('drawScene', () => {
     expect(texts[0]!.text).toBe('b.ts · 3 файла');
   });
 
+  it('яркость подписи берётся из слоя и множится на яркость узла', () => {
+    const { ctx, texts } = stubContext();
+    const input = sceneWithTwoNodes();
+    input.labels = {
+      count: 2,
+      path: Uint32Array.from([0, 1]),
+      text: ['полная', 'бледная'],
+      alpha: Float32Array.from([1, 0.45]),
+    };
+
+    drawScene(ctx, new Camera(), input, 800, 600);
+
+    // Слой рисуется с конца, поэтому первой ложится менее важная подпись.
+    expect(texts.map((t) => t.text)).toEqual(['бледная', 'полная']);
+    expect(texts[0]!.alpha).toBeCloseTo(0.45, 5);
+    expect(texts[1]!.alpha).toBeCloseTo(1, 5);
+  });
+
   it('текст подписи берётся из слоя, а не собирается отрисовкой', () => {
     const { ctx, texts } = stubContext();
     const input = sceneWithTwoNodes();
     // Путь 0 в дереве называется иначе, чем текст в слое: если бы отрисовка
     // собирала подпись сама, совпадения бы не случилось.
-    input.labels = { count: 1, path: Uint32Array.from([0]), text: ['совсем другой текст'] };
+    input.labels = { count: 1, path: Uint32Array.from([0]), text: ['совсем другой текст'],
+      alpha: Float32Array.from(Array(16).fill(1)),
+    };
 
     drawScene(ctx, new Camera(), input, 800, 600);
 
@@ -403,7 +425,9 @@ describe('drawScene', () => {
     const input = sceneWithTwoNodes();
     // Узел 0 стоит в мировом (0, 0) с радиусом 3 — при единичном масштабе и
     // нулевом смещении камеры экранные координаты совпадают с мировыми.
-    input.labels = { count: 1, path: Uint32Array.from([0]), text: ['x'] };
+    input.labels = { count: 1, path: Uint32Array.from([0]), text: ['x'],
+      alpha: Float32Array.from(Array(16).fill(1)),
+    };
 
     drawScene(ctx, new Camera(), input, 800, 600);
 
@@ -415,7 +439,9 @@ describe('drawScene', () => {
     const { ctx, texts } = stubContext();
     const input = sceneWithTwoNodes();
     input.alpha[0] = 0.1; // сильно погашен фильтром
-    input.labels = { count: 1, path: Uint32Array.from([0]), text: ['x'] };
+    input.labels = { count: 1, path: Uint32Array.from([0]), text: ['x'],
+      alpha: Float32Array.from(Array(16).fill(1)),
+    };
 
     drawScene(ctx, new Camera(), input, 800, 600);
 
@@ -427,7 +453,9 @@ describe('drawScene', () => {
     const { ctx, texts } = stubContext();
     const input = sceneWithTwoNodes();
     input.alpha[0] = 0.8;
-    input.labels = { count: 1, path: Uint32Array.from([0]), text: ['x'] };
+    input.labels = { count: 1, path: Uint32Array.from([0]), text: ['x'],
+      alpha: Float32Array.from(Array(16).fill(1)),
+    };
 
     drawScene(ctx, new Camera(), input, 800, 600);
 
@@ -440,7 +468,9 @@ describe('drawScene', () => {
     input.beams.count = 1;
     input.beams.author[0] = 0;
     input.actors.active[1] = 1;
-    input.labels = { count: 1, path: Uint32Array.from([0]), text: ['подпись'] };
+    input.labels = { count: 1, path: Uint32Array.from([0]), text: ['подпись'],
+      alpha: Float32Array.from(Array(16).fill(1)),
+    };
 
     drawScene(ctx, new Camera(), input, 800, 600);
 
@@ -459,7 +489,9 @@ describe('drawScene', () => {
     const text = 'очень-длинное-имя.ts';
     input.positions[0] = width - 10;
     input.positions[1] = 300;
-    input.labels = { count: 1, path: Uint32Array.from([0]), text: [text] };
+    input.labels = { count: 1, path: Uint32Array.from([0]), text: [text],
+      alpha: Float32Array.from(Array(16).fill(1)),
+    };
 
     drawScene(ctx, new Camera(), input, width, 600);
 
@@ -476,7 +508,9 @@ describe('drawScene', () => {
     // если не помещается» не должно срабатывать просто так.
     input.positions[0] = 300;
     input.positions[1] = 300;
-    input.labels = { count: 1, path: Uint32Array.from([0]), text: ['имя.ts'] };
+    input.labels = { count: 1, path: Uint32Array.from([0]), text: ['имя.ts'],
+      alpha: Float32Array.from(Array(16).fill(1)),
+    };
 
     drawScene(ctx, new Camera(), input, 800, 600);
 
@@ -494,6 +528,7 @@ describe('drawScene', () => {
       count: 2,
       path: Uint32Array.from([0, 1]),
       text: ['наведённый', 'случайный сосед'],
+      alpha: Float32Array.from(Array(16).fill(1)),
     };
 
     drawScene(ctx, new Camera(), input, 800, 600);
