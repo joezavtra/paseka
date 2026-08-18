@@ -110,6 +110,23 @@ const BEAM_BOW = 0.18;
 const MIN_LABEL_ALPHA = 0.5;
 /** Зазор между краем узла и его подписью, в экранных пикселях. */
 const LABEL_GAP_PX = 4;
+/**
+ * Цвет ребра дерева.
+ *
+ * Прежний `#2a3140` давал к фону сцены контраст 1.49 — линия формально была, а
+ * глазом её не было; ровно тот же дефект уже случался у подложки-гистограммы
+ * (там было 1.51). Нынешнее значение даёт 3.53 при 7.72 у узлов и 12.59 у
+ * подписей, то есть связь видно, но спорить с самими узлами за внимание она не
+ * начинает. Число сторожит тест: он считает контраст к SCENE_BACKGROUND сам, а
+ * не сверяется с записанной здесь величиной.
+ */
+const EDGE_COLOR = '#586a84';
+/**
+ * Наименьшая толщина ребра в экранных пикселях. Прежние 0.4 на общем плане
+ * давали линию тоньше пикселя: сглаживание размазывало её в почти прозрачную
+ * и без того малозаметную полоску.
+ */
+const MIN_EDGE_WIDTH_PX = 0.9;
 
 /** Радиус узла с учётом свечения от недавнего касания. */
 export function flashRadius(radius: number, flash: number): number {
@@ -137,6 +154,8 @@ export function beamControl(
   return [mx - (dy / length) * length * BEAM_BOW, my + (dx / length) * length * BEAM_BOW];
 }
 
+export { EDGE_COLOR, MIN_EDGE_WIDTH_PX };
+
 export function drawScene(
   ctx: CanvasRenderingContext2D,
   camera: Camera,
@@ -151,8 +170,8 @@ export function drawScene(
   // следующий слой не должен зависеть от того, что осталось от предыдущего.
   ctx.save();
 
-  ctx.strokeStyle = '#2a3140';
-  ctx.lineWidth = Math.max(0.4, camera.scale * 0.35);
+  ctx.strokeStyle = EDGE_COLOR;
+  ctx.lineWidth = Math.max(MIN_EDGE_WIDTH_PX, camera.scale * 0.35);
   // Рёбер могут быть десятки тысяч, а различных альф среди них — единицы (в
   // основном погашено/не погашено, до четырёх во время перехода фильтра).
   // Группируем по округлённой альфе и на группу тратим один beginPath() и

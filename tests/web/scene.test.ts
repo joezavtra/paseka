@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { Camera } from '../../web/render/camera.js';
+import { EDGE_COLOR, MIN_EDGE_WIDTH_PX } from '../../web/render/scene.js';
+import { SCENE_BACKGROUND } from '../../web/render/palette.js';
 import { drawScene, type SceneInput } from '../../web/render/scene.js';
 import { DIR_COLOR_INDEX, PALETTE } from '../../web/render/palette.js';
 
@@ -176,7 +178,7 @@ describe('drawScene', () => {
     drawScene(ctx, new Camera(), input, 800, 600);
 
     // Первый stroke — рёбра дерева, дальше идут лучи.
-    expect(strokes).toEqual(['#2a3140', '#222222']);
+    expect(strokes).toEqual([EDGE_COLOR, '#222222']);
   });
 
   it('ведёт луч в те координаты, которые ему дали, не заглядывая в маску живых', () => {
@@ -227,7 +229,7 @@ describe('drawScene', () => {
 
     // Первый stroke — ребро дерева: его прозрачность не может быть ярче
     // погашенного конца, иначе ветка выглядела бы соединённой яркой линией.
-    expect(strokes[0]).toBe('#2a3140');
+    expect(strokes[0]).toBe(EDGE_COLOR);
     expect(strokeAlpha[0]).toBeCloseTo(0.12, 5);
   });
 
@@ -247,7 +249,7 @@ describe('drawScene', () => {
     drawScene(ctx, new Camera(), input, 800, 600);
 
     // Одна и та же альфа у всех трёх рёбер — один контур, один stroke().
-    expect(strokes.filter((style) => style === '#2a3140')).toHaveLength(1);
+    expect(strokes.filter((style) => style === EDGE_COLOR)).toHaveLength(1);
   });
 
   it('не рисует ребро, целиком лежащее за пределами видимой области', () => {
@@ -260,7 +262,7 @@ describe('drawScene', () => {
 
     drawScene(ctx, new Camera(), input, 800, 600);
 
-    expect(strokes.filter((style) => style === '#2a3140')).toHaveLength(0);
+    expect(strokes.filter((style) => style === EDGE_COLOR)).toHaveLength(0);
   });
 
   it('гасит луч по его силе', () => {
@@ -303,7 +305,7 @@ describe('drawScene', () => {
     drawScene(ctx, new Camera(), input, 800, 600);
 
     // Первый stroke — ребро дерева, второй — кольцо обводки узла 0.
-    expect(strokes).toEqual(['#2a3140', '#f0f6fc']);
+    expect(strokes).toEqual([EDGE_COLOR, '#f0f6fc']);
   });
 
   it('не обводит узел, не рисуемый на сцене', () => {
@@ -553,5 +555,45 @@ describe('drawScene', () => {
     drawScene(stub.ctx, new Camera(), input, 800, 600);
 
     for (const key of STATE_KEYS) expect([key, bag[key]]).toEqual([key, before[key]]);
+  });
+});
+
+describe('видимость рёбер', () => {
+  /** Коэффициент контрастности по WCAG между двумя цветами #rrggbb. */
+  function contrast(a: string, b: string): number {
+    const channel = (value: number): number =>
+      value <= 0.03928 ? value / 12.92 : Math.pow((value + 0.055) / 1.055, 2.4);
+    const luminance = (hex: string): number => {
+      const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255);
+      return 0.2126 * channel(r!) + 0.7152 * channel(g!) + 0.0722 * channel(b!);
+    };
+    const first = luminance(a);
+    const second = luminance(b);
+    const lighter = Math.max(first, second);
+    const darker = Math.min(first, second);
+    return (lighter + 0.05) / (darker + 0.05);
+  }
+
+  it('расчёт контраста сходится на эталонных величинах', () => {
+    expect(contrast('#ffffff', '#000000')).toBeCloseTo(21, 1);
+    expect(contrast(SCENE_BACKGROUND, SCENE_BACKGROUND)).toBeCloseTo(1, 5);
+  });
+
+  it('ребро отличимо от фона сцены', () => {
+    // Прежний цвет давал 1.49 — линия была только в коде. Порог 3 берётся из
+    // того же места, что и у подложки-гистограммы: ниже линия перестаёт
+    // читаться на тёмном фоне.
+    expect(contrast(EDGE_COLOR, SCENE_BACKGROUND)).toBeGreaterThan(3);
+  });
+
+  it('ребро тусклее узлов и подписей: связь не спорит с ними за внимание', () => {
+    const node = contrast('#7aa2f7', SCENE_BACKGROUND);
+    const label = contrast('#c9d1d9', SCENE_BACKGROUND);
+    expect(contrast(EDGE_COLOR, SCENE_BACKGROUND)).toBeLessThan(node);
+    expect(contrast(EDGE_COLOR, SCENE_BACKGROUND)).toBeLessThan(label);
+  });
+
+  it('ребро не тоньше пикселя даже на общем плане', () => {
+    expect(MIN_EDGE_WIDTH_PX).toBeGreaterThanOrEqual(0.75);
   });
 });
