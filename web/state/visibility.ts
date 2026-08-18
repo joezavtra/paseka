@@ -112,8 +112,10 @@ function pathsOf(pack: Pack, ids: ReadonlySet<number>): string[] {
 function idsOf(pack: Pack, value: unknown): Set<number> {
   const ids = new Set<number>();
   if (!Array.isArray(value)) return ids;
-  // Индекс строится один раз на разбор: путей десятки тысяч, а разбор бывает
-  // раз за загрузку страницы.
+  // Индекс строится заново на каждый вызов — decodeVisibility зовёт idsOf
+  // дважды (для hidden и для collapsed), так что на разбор пакета выходит два
+  // прохода. Это дёшево: путей десятки тысяч, а разбор бывает раз за загрузку
+  // страницы.
   const index = new Map<string, number>();
   for (let path = 0; path < pack.meta.pathCount; path++) index.set(pack.paths[path]!, path);
   for (const item of value) {
