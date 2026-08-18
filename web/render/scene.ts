@@ -47,6 +47,13 @@ export interface LabelLayer {
   count: number;
   path: Uint32Array;
   text: string[];
+  /**
+   * Множитель яркости подписи: его решает отбор (web/render/labels.ts), а не
+   * отрисовка. Бледная подпись обычной папки и гаснущая подпись только что
+   * изменённого файла — это одно и то же поле, потому что вопрос один:
+   * насколько эта подпись важна прямо сейчас.
+   */
+  alpha: Float32Array;
 }
 
 export interface SceneInput {
@@ -300,7 +307,11 @@ export function drawScene(
     // Яркость подписи — яркость узла, но не ниже MIN_LABEL_ALPHA: иначе
     // подпись наведённого узла в погашенной фильтром ветке была бы нечитаема,
     // а именно наведённый узел — тот случай, где молчать нельзя (см. labels.ts).
-    ctx.globalAlpha = Math.max(MIN_LABEL_ALPHA, input.alpha[path]!);
+    // Сверху накладывается множитель важности из слоя: он делает подписи папок
+    // бледнее файловых и гасит подпись изменённого файла вместе с его вспышкой.
+    ctx.globalAlpha =
+      Math.max(MIN_LABEL_ALPHA, input.alpha[path]!) *
+      Math.min(1, Math.max(0, input.labels.alpha[i]!));
     ctx.fillStyle = '#c9d1d9';
     const text = input.labels.text[i] ?? '';
     // Подпись стоит справа от узла, но у правого края окна она уезжала за кадр

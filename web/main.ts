@@ -7,7 +7,12 @@ import { drawScene, type SceneInput } from './render/scene.js';
 import { DIR_COLOR_INDEX, paletteIndexForPath } from './render/palette.js';
 import { deriveActivity } from './render/activity.js';
 import { NOTHING, pickNode } from './render/pick.js';
-import { DEFAULT_LABEL_LIMIT, labelFor, selectLabels } from './render/labels.js';
+import {
+  DEFAULT_FOLDER_LABEL_LIMIT,
+  DEFAULT_LABEL_LIMIT,
+  labelFor,
+  selectLabels,
+} from './render/labels.js';
 import { Playback } from './time/playback.js';
 import { formatCommitLabel, mountTransport } from './ui/transport.js';
 import { mountSidebar, type SidebarHandles } from './ui/sidebar.js';
@@ -108,12 +113,14 @@ async function start(): Promise<void> {
     // там же, для подписи свёрнутой папки.
     files: new Int32Array(pathCount),
     // Слой подписей кадра; собирается в цикле кадра из selectLabels. Ёмкость
-    // массива путей — на весь лимит подписей, а не на pathCount: подписей на
-    // экране всегда на порядки меньше путей в истории.
+    // массива путей — на оба предела сразу (файлы и папки считаются отдельно),
+    // а не на pathCount: подписей на экране всегда на порядки меньше путей в
+    // истории.
     labels: {
       count: 0,
-      path: new Uint32Array(DEFAULT_LABEL_LIMIT),
+      path: new Uint32Array(DEFAULT_LABEL_LIMIT + DEFAULT_FOLDER_LABEL_LIMIT),
       text: [],
+      alpha: new Float32Array(DEFAULT_LABEL_LIMIT + DEFAULT_FOLDER_LABEL_LIMIT),
     },
   };
 
@@ -904,15 +911,27 @@ async function start(): Promise<void> {
       // DEFAULT_LABEL_LIMIT по имени: иначе рассинхронизация констант молча
       // проглотила бы запись за границу массива, и часть подписей пропала бы
       // без единого следа.
-      const labelPaths = selectLabels(scene, camera, canvas.clientWidth, canvas.clientHeight, {
+      // Признак каталога живёт в пакете, а не в сцене: отрисовке он не нужен
+      // (цвет узла уже посчитан), а отбору подписей — нужен, потому что папка
+      // подписывается всегда. Объект собирается на кадр и держит те же самые
+      // массивы по ссылке — копирования данных здесь нет.
+      const labelInput = { ...scene, isDir: pack.pathIsDir };
+      const labels = selectLabels(labelInput, camera, canvas.clientWidth, canvas.clientHeight, {
         hovered,
-        limit: scene.labels.path.length,
+        // Пределы привязаны к фактической ёмкости слоя, а не к константам по
+        // имени: иначе рассинхронизация молча проглотила бы запись за границу
+        // массива, и часть подписей пропала бы без единого следа. Ёмкость
+        // рассчитана на сумму обоих пределов, поэтому каждому достаётся своя
+        // доля, а вместе они её не превысят.
+        limit: DEFAULT_LABEL_LIMIT,
+        folderLimit: scene.labels.path.length - DEFAULT_LABEL_LIMIT,
       });
-      scene.labels.count = labelPaths.length;
-      for (let i = 0; i < labelPaths.length; i++) {
-        const path = labelPaths[i]!;
-        scene.labels.path[i] = path;
-        scene.labels.text[i] = labelTextFor(path);
+      scene.labels.count = labels.length;
+      for (let i = 0; i < labels.length; i++) {
+        const label = labels[i]!;
+        scene.labels.path[i] = label.path;
+        scene.labels.text[i] = labelTextFor(label.path);
+        scene.labels.alpha[i] = label.alpha;
       }
 
       drawScene(ctx, camera, scene, canvas.clientWidth, canvas.clientHeight);
