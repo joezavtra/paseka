@@ -1,11 +1,11 @@
 import { test, expect } from '@playwright/test';
-import { spawn, type ChildProcess } from 'node:child_process';
+import { startCli, type RunningCli } from '../helpers/cli.js';
 import { makeRepo, cleanupRepos } from '../helpers/tmp-repo.js';
 
-let cli: ChildProcess | null = null;
+let cli: RunningCli | null = null;
 
 test.afterAll(async () => {
-  cli?.kill('SIGTERM');
+  cli?.stop();
   await cleanupRepos();
 });
 
@@ -23,24 +23,9 @@ test('во время воспроизведения появляются авт
     { message: 'пятый', author: { name: 'Аня Петрова', email: 'anya@e.com' }, write: { 'e.md': 'e\n' } },
   ]);
 
-  cli = spawn('node', ['dist/node/cli/main.js', repo, '--port', '0', '--no-open'], {
-    stdio: ['ignore', 'pipe', 'inherit'],
-  });
+  cli = await startCli(repo);
 
-  const url = await new Promise<string>((resolve, reject) => {
-    let out = '';
-    const timer = setTimeout(() => reject(new Error(`CLI не напечатал URL:\n${out}`)), 30_000);
-    cli!.stdout!.on('data', (chunk: Buffer) => {
-      out += chunk.toString();
-      const match = out.match(/http:\/\/localhost:\d+/);
-      if (match) {
-        clearTimeout(timer);
-        resolve(match[0]);
-      }
-    });
-  });
-
-  await page.goto(url);
+  await page.goto(cli.url);
   await page.waitForSelector('canvas[data-ready="true"]');
 
   // В покое на HEAD авторов быть не должно: никто ничего только что не трогал.
