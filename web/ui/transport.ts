@@ -92,7 +92,14 @@ export function mountTransport(root: HTMLElement, options: TransportOptions): Tr
   const label = document.createElement('span');
   label.id = 'cursor-label';
 
-  root.append(playButton, speed, track, label);
+  // Органы управления живут в своей строке, подпись — в своей. Ширина дорожки
+  // обязана зависеть только от ширины окна: пока подпись стояла с ней в одном
+  // ряду, каждый шаг воспроизведения менял её длину, дорожка прыгала, и попасть
+  // мышью в нужное место истории было нельзя.
+  const controls = document.createElement('div');
+  controls.className = 'transport-controls';
+  controls.append(playButton, speed, track);
+  root.append(controls, label);
 
   // Гистограмма рисуется после вставки в документ: до этого у канвы нет размера.
   // Число корзин пересчитывается на каждую перерисовку, потому что зависит от
