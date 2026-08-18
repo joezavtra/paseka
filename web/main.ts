@@ -12,7 +12,7 @@ import { Playback } from './time/playback.js';
 import { formatCommitLabel, mountTransport } from './ui/transport.js';
 import { mountSidebar, type SidebarHandles } from './ui/sidebar.js';
 import { mountInspector } from './ui/inspector.js';
-import { describeNode } from './state/node-info.js';
+import { basenameOf, describeNode } from './state/node-info.js';
 import type { Pack } from '../src/model/types.js';
 import { RecentEvents } from './time/recent.js';
 import { ActorField } from './render/actors.js';
@@ -385,7 +385,14 @@ async function start(): Promise<void> {
   function showSelected(): void {
     if (selected < 0 || !inspector || !inspectorRoot) return;
     const wasHidden = inspectorRoot.hidden;
-    inspector.show(describeNode(pack, selected, engine.cursor, engine.alive, engine.sizes));
+    inspector.show(
+      describeNode(pack, selected, engine.cursor, engine.alive, engine.sizes, {
+        // Тот же source of truth, что и у подписи узла на сцене (см.
+        // labelTextFor ниже) — иначе карточка и подпись могли бы разойтись в
+        // том, что показывают за одним и тем же кружком.
+        represented: representedFilesFor(selected),
+      }),
+    );
     // Полоса справа появляется вместе с первым показом — сообщаем камере
     // немедленно, а не жданием следующего сообщения раскладки, которого
     // может уже не быть.
@@ -736,23 +743,27 @@ async function start(): Promise<void> {
   window.addEventListener('resize', resize);
   resize();
 
-  /** Имя пути без каталогов; у корня совпадает с именем репозитория. */
-  function basename(fullPath: string): string {
-    if (fullPath === '') return pack.meta.repoName;
-    return fullPath.slice(fullPath.lastIndexOf('/') + 1);
+  /**
+   * Число файлов, которое узел представляет на сцене прямо сейчас — только
+   * для свёрнутой папки (папка, и она есть в `visibilitySpec.collapsed`), для
+   * всех остальных узлов вопрос неприменим (`undefined`). Решение «когда
+   * считать» принимается ровно здесь и один раз — и подпись узла, и карточка
+   * инспектора (см. `showSelected`) читают именно этот помощник, а не
+   * пересобирают то же условие каждая по-своему: разойдись оно между ними,
+   * пользователь увидел бы на одном кружке два необъяснимо разных числа.
+   */
+  function representedFilesFor(path: number): number | undefined {
+    const isCollapsedFolder = pack.pathIsDir[path] === 1 && visibilitySpec.collapsed.has(path);
+    return isCollapsedFolder ? scene.files[path]! : undefined;
   }
 
   /**
    * Текст подписи узла. Решение «показывать ли счётчик файлов» принимается
-   * ровно здесь и один раз: счётчик уместен только у свёрнутой папки (папка,
-   * и она есть в `visibilitySpec.collapsed`) — у обычного файла или у
-   * развёрнутой папки его нечего показывать, даже если внутри что-то есть.
-   * Без отдельной функции это решение расползлось бы по выражению-загадке в
-   * цикле сборки слоя.
+   * в `representedFilesFor` — здесь только сборка текста из готового числа,
+   * без выражения-загадки в цикле сборки слоя.
    */
   function labelTextFor(path: number): string {
-    const isCollapsedFolder = pack.pathIsDir[path] === 1 && visibilitySpec.collapsed.has(path);
-    return labelFor(basename(pack.paths[path] ?? ''), isCollapsedFolder ? scene.files[path]! : 0);
+    return labelFor(basenameOf(pack, path), representedFilesFor(path) ?? 0);
   }
 
   /** Наведённый путь; NOTHING — указателя на дереве нет. Считается раз в кадр. */
@@ -859,8 +870,13 @@ async function start(): Promise<void> {
 
       // Слой подписей: кто подписан и в каком порядке решает selectLabels,
       // здесь только перенос результата и сборка готового текста на узел.
+      // limit привязан к фактической ёмкости scene.labels.path, а не к
+      // DEFAULT_LABEL_LIMIT по имени: иначе рассинхронизация констант молча
+      // проглотила бы запись за границу массива, и часть подписей пропала бы
+      // без единого следа.
       const labelPaths = selectLabels(scene, camera, canvas.clientWidth, canvas.clientHeight, {
         hovered,
+        limit: scene.labels.path.length,
       });
       scene.labels.count = labelPaths.length;
       for (let i = 0; i < labelPaths.length; i++) {

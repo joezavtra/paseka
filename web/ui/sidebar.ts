@@ -1,5 +1,6 @@
 import type { Pack } from '../../src/model/types.js';
 import { extensionOf, type FilterSpec } from '../state/filter.js';
+import { basenameOf } from '../state/node-info.js';
 import type { VisibilitySpec } from '../state/visibility.js';
 import { ownsTextInput } from './keys.js';
 
@@ -228,7 +229,7 @@ export function mountSidebar(root: HTMLElement, options: SidebarOptions): Sideba
   noiseButton.addEventListener('click', () => {
     for (let path = 1; path < pack.meta.pathCount; path++) {
       if (pack.pathIsDir[path] !== 1) continue;
-      const name = pack.paths[path]!.slice(pack.paths[path]!.lastIndexOf('/') + 1);
+      const name = basenameOf(pack, path);
       if (NOISE.includes(name)) hidden.add(path);
     }
     refreshTree();
@@ -252,7 +253,7 @@ export function mountSidebar(root: HTMLElement, options: SidebarOptions): Sideba
    * фокус: сама кнопка `toggle` никогда не пересоздаётся.
    */
   function renderRow(child: number, container: HTMLElement): void {
-    const folderName = pack.paths[child]!.slice(pack.paths[child]!.lastIndexOf('/') + 1);
+    const folderName = basenameOf(pack, child);
 
     const row = document.createElement('div');
     row.className = 'tree-row';

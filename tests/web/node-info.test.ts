@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { buildPack } from '../../src/model/build.js';
 import { TimeEngine } from '../../web/time/engine.js';
-import { describeNode } from '../../web/state/node-info.js';
+import { basenameOf, describeNode } from '../../web/state/node-info.js';
 
 const add = (path: string, lines: number) => ({
   path,
@@ -72,6 +72,17 @@ const info = (path: string, cursor: number, options = {}) => {
   const engine = at(cursor);
   return describeNode(pack, id(path), cursor, engine.alive, engine.sizes, options);
 };
+
+describe('basenameOf', () => {
+  it('отдаёт имя без пути', () => {
+    expect(basenameOf(pack, id('src/a.ts'))).toBe('a.ts');
+    expect(basenameOf(pack, id('src'))).toBe('src');
+  });
+
+  it('у корня отдаёт имя репозитория', () => {
+    expect(basenameOf(pack, 0)).toBe('demo');
+  });
+});
 
 describe('describeNode', () => {
   it('описывает файл на текущем курсоре', () => {
@@ -164,6 +175,18 @@ describe('describeNode', () => {
 
   it('корень называется именем репозитория', () => {
     expect(info('', 2).name).toBe('demo');
+  });
+
+  it('без options.represented поле represented отсутствует', () => {
+    expect(info('src', 2).represented).toBeUndefined();
+  });
+
+  it('represented — это то же число, что передали в options, а не пересчитанное', () => {
+    // describeNode не имеет доступа к спецификации видимости — значение
+    // приходит извне и должно перенестись как есть, даже если оно не бьётся
+    // с files (та же ситуация, что и у свёрнутой папки со скрытым поддеревом).
+    expect(info('src', 2, { represented: 1 }).represented).toBe(1);
+    expect(info('src', 2, { represented: 0 }).represented).toBe(0);
   });
 });
 

@@ -1,5 +1,6 @@
 import type { Pack } from '../../src/model/types.js';
 import { avatarColor } from '../render/avatar.js';
+import { representedClause } from '../render/labels.js';
 import type { NodeInfo } from '../state/node-info.js';
 import { drawHistogram } from './histogram.js';
 import { commitDateLabel, formatCommitLabel } from './transport.js';
@@ -91,7 +92,18 @@ export function mountInspector(root: HTMLElement, options: InspectorOptions): In
     path.textContent = info.fullPath === '' ? pack.meta.repoName : info.fullPath;
 
     const summaryParts: string[] = [`строк: ${info.lines}`];
-    if (info.isDir) summaryParts.push(`файлов: ${info.files}`);
+    if (info.isDir) {
+      summaryParts.push(`файлов: ${info.files}`);
+      // Свёрнутая папка может прятать скрытое поддерево: тогда «файлов» здесь
+      // (живых в истории) больше, чем реально представлено одним кружком на
+      // сцене — молчать об этом нельзя, иначе рядом на экране два разных
+      // числа без объяснения (см. представленное в подписи узла, web/main.ts).
+      // В обычном случае (внутри ничего не скрыто, represented === files)
+      // клауза не нужна — карточка выглядит как раньше.
+      if (info.represented !== undefined && info.represented < info.files) {
+        summaryParts.push(representedClause(info.represented));
+      }
+    }
     if (!info.alive) summaryParts.push('удалён');
     summary.textContent = summaryParts.join(' · ');
 

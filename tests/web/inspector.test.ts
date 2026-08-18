@@ -35,11 +35,11 @@ const pack = buildPack(
   { repoName: 'demo', head: 'c1' },
 );
 
-function infoFor(path: string) {
+function infoFor(path: string, options: { represented?: number } = {}) {
   const engine = new TimeEngine(pack);
   engine.seek(pack.meta.commitCount - 1);
   const id = pack.paths.indexOf(path);
-  return describeNode(pack, id, engine.cursor, engine.alive, engine.sizes);
+  return describeNode(pack, id, engine.cursor, engine.alive, engine.sizes, options);
 }
 
 describe('карточка узла', () => {
@@ -73,6 +73,28 @@ describe('карточка узла', () => {
     // проверяем ровно строки, которые печатает сводка (10 + 4 строк, 2 файла).
     expect(root.textContent).toContain('строк: 14');
     expect(root.textContent).toContain('файлов: 2');
+    handles.unmount();
+  });
+
+  it('в обычном случае (ничего не скрыто) не упоминает сцену вовсе', () => {
+    // represented === files — расхождения нет, клауза не нужна: карточка
+    // выглядит как раньше, без утверждения про то, что показано на сцене.
+    const root = document.createElement('aside');
+    const handles = mountInspector(root, { pack });
+    handles.show(infoFor('src', { represented: 2 }));
+    expect(root.textContent).not.toContain('на сцене');
+    handles.unmount();
+  });
+
+  it('когда свёрнутая папка прячет скрытое поддерево, называет и разницу', () => {
+    // Карточка отвечает «сколько живого внутри» (files), подпись на сцене —
+    // «сколько представлено одним кружком» (represented). Расходятся —
+    // карточка обязана назвать обе цифры, а не молча показать только files.
+    const root = document.createElement('aside');
+    const handles = mountInspector(root, { pack });
+    handles.show(infoFor('src', { represented: 1 }));
+    expect(root.textContent).toContain('файлов: 2');
+    expect(root.textContent).toContain('на сцене показан 1');
     handles.unmount();
   });
 

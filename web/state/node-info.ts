@@ -1,5 +1,19 @@
 import type { Pack } from '../../src/model/types.js';
 
+/**
+ * Отображаемое имя пути без каталогов; у корня (пустой путь) — имя
+ * репозитория. Общий помощник для карточки узла, подписи на сцене
+ * (web/main.ts) и панели дерева (web/ui/sidebar.ts): пользователь видит имя
+ * одного и того же узла сразу в нескольких местах интерфейса, и они обязаны
+ * называть его одинаково — второе независимое вычисление здесь было бы шансом
+ * разойтись с первым при следующей правке любого из мест.
+ */
+export function basenameOf(pack: Pack, path: number): string {
+  const fullPath = pack.paths[path] ?? '';
+  if (fullPath === '') return pack.meta.repoName;
+  return fullPath.slice(fullPath.lastIndexOf('/') + 1);
+}
+
 export interface Contributor {
   author: number;
   /** Сколько коммитов этого автора задели узел или его поддерево. */
@@ -17,6 +31,19 @@ export interface NodeInfo {
   lines: number;
   /** Живых файлов: у файла 1 или 0, у каталога — сколько внутри. */
   files: number;
+  /**
+   * Сколько файлов из этого поддерева представлено на сцене одним этим
+   * кружком прямо сейчас — только когда узел является свёрнутой папкой,
+   * иначе `undefined` (вопрос неприменим). Значение приходит снаружи через
+   * `NodeInfoOptions.represented` и просто переносится в вывод: у карточки
+   * нет доступа к спецификации видимости, чтобы посчитать его самой, а
+   * дублировать это правило было бы риском разойтись со сценой — тем самым
+   * узлом, который пользователь и сравнивает глазами с этой карточкой.
+   * Может быть меньше `files`, если внутри свёрнутой папки есть скрытое
+   * поддерево: тогда карточка обязана назвать разницу явно, а не молча
+   * показать число, которое не совпадает с подписью на сцене.
+   */
+  represented?: number;
   /** Индекс коммита, в котором путь впервые появился; -1, если ещё не появился. */
   birthCommit: number;
   /** Последний коммит не позже курсора, задевший узел; -1, если таких нет. */
@@ -40,6 +67,14 @@ export interface NodeInfoOptions {
   recent?: number;
   /** На сколько корзин делить ось истории. */
   buckets?: number;
+  /**
+   * Сколько файлов узел представляет на сцене прямо сейчас — тот же `files`
+   * из `resolveVisibility` (web/state/visibility.ts), что уже использован для
+   * подписи узла. Передаётся, а не пересчитывается: у `describeNode` нет (и
+   * не должно быть) доступа к спецификации видимости, только к живости и
+   * размерам. `undefined`, если вопрос неприменим (узел — не свёрнутая папка).
+   */
+  represented?: number;
 }
 
 /**
@@ -74,8 +109,7 @@ export function describeNode(
 
   const isDir = pack.pathIsDir[path] === 1;
   const fullPath = pack.paths[path] ?? '';
-  const slash = fullPath.lastIndexOf('/');
-  const name = fullPath === '' ? pack.meta.repoName : fullPath.slice(slash + 1);
+  const name = basenameOf(pack, path);
 
   // Члены поддерева: сам путь и всё, что ниже. Один проход по возрастанию.
   const member = new Uint8Array(pathCount);
@@ -133,6 +167,7 @@ export function describeNode(
     alive: alive[path] === 1,
     lines,
     files,
+    represented: options.represented,
     birthCommit,
     lastCommit,
     commits: touchedCommits.size,

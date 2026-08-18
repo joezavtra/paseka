@@ -4,6 +4,7 @@ import {
   MIN_LABEL_RADIUS_PX,
   labelFor,
   pluralFiles,
+  representedClause,
   selectLabels,
   type LabelCamera,
   type LabelInput,
@@ -45,11 +46,39 @@ describe('labelFor', () => {
   });
 });
 
+describe('representedClause', () => {
+  const cases: [number, string][] = [
+    [1, 'на сцене показан 1'],
+    [2, 'на сцене показано 2'],
+    [5, 'на сцене показано 5'],
+    [11, 'на сцене показано 11'],
+    [12, 'на сцене показано 12'],
+    [21, 'на сцене показан 21'],
+    [22, 'на сцене показано 22'],
+  ];
+
+  for (const [count, expected] of cases) {
+    it(`${count} → «${expected}»`, () => {
+      expect(representedClause(count)).toBe(expected);
+    });
+  }
+});
+
 /** Камера-тождество: экранные координаты совпадают с мировыми, масштаб 1. */
 const identityCamera: LabelCamera = {
   scale: 1,
   toScreen: (worldX: number, worldY: number) => [worldX, worldY],
 };
+
+/** Камера со смещением и масштабом ≠ 1: экран = мир·scale + offset. Нужна,
+ * чтобы отличить проверки, реально идущие через camera.scale/toScreen, от
+ * тех, что случайно совпадают на камере-тождестве. */
+function scaledCamera(scale: number, offsetX = 0, offsetY = 0): LabelCamera {
+  return {
+    scale,
+    toScreen: (worldX: number, worldY: number) => [worldX * scale + offsetX, worldY * scale + offsetY],
+  };
+}
 
 const WIDTH = 800;
 const HEIGHT = 600;
@@ -75,12 +104,93 @@ describe('selectLabels', () => {
     expect(result).toEqual([0]);
   });
 
-  it('ушедший за край экрана (с полем в 40 px) не подписывается', () => {
+  it('ушедший за левый край экрана (с полем в 40 px) не подписывается', () => {
     const input = baseInput(1);
     input.radius[0] = 20;
     input.positions[0] = -61; // левее экрана больше, чем на 40 px с учётом радиуса
     input.positions[1] = 0;
     const result = selectLabels(input, identityCamera, WIDTH, HEIGHT);
+    expect(result).toEqual([]);
+  });
+
+  it('ушедший за верхний край экрана (с полем в 40 px) не подписывается', () => {
+    const input = baseInput(1);
+    input.radius[0] = 20;
+    input.positions[0] = 0;
+    input.positions[1] = -61; // выше экрана больше, чем на 40 px с учётом радиуса
+    const result = selectLabels(input, identityCamera, WIDTH, HEIGHT);
+    expect(result).toEqual([]);
+  });
+
+  it('ушедший за правый край экрана (с полем в 40 px) не подписывается', () => {
+    const input = baseInput(1);
+    input.radius[0] = 20;
+    input.positions[0] = WIDTH + 61; // правее экрана больше, чем на 40 px с учётом радиуса
+    input.positions[1] = 0;
+    const result = selectLabels(input, identityCamera, WIDTH, HEIGHT);
+    expect(result).toEqual([]);
+  });
+
+  it('ушедший за нижний край экрана (с полем в 40 px) не подписывается', () => {
+    const input = baseInput(1);
+    input.radius[0] = 20;
+    input.positions[0] = 0;
+    input.positions[1] = HEIGHT + 61; // ниже экрана больше, чем на 40 px с учётом радиуса
+    const result = selectLabels(input, identityCamera, WIDTH, HEIGHT);
+    expect(result).toEqual([]);
+  });
+
+  it('узел ровно на границе поля 40px ещё подписывается, за ней — уже нет', () => {
+    const input = baseInput(1);
+    input.radius[0] = 20;
+    // sx + r = -60 + 20 = -40 — ровно на границе поля EDGE_MARGIN_PX: если бы
+    // поле было обнулено (или иначе искажено), этот узел уже не прошёл бы.
+    input.positions[0] = -60;
+    input.positions[1] = 0;
+    const atEdge = selectLabels(input, identityCamera, WIDTH, HEIGHT);
+    expect(atEdge).toEqual([0]);
+
+    // На 1px дальше та же арифметика уже выводит узел за поле.
+    input.positions[0] = -61;
+    const beyondEdge = selectLabels(input, identityCamera, WIDTH, HEIGHT);
+    expect(beyondEdge).toEqual([]);
+  });
+
+  it('порог MIN_LABEL_RADIUS_PX сравнивается с экранным радиусом (учитывает camera.scale), а не мировым', () => {
+    const camera = scaledCamera(5); // мировой радиус 2 * scale 5 = экранный 10 ≥ порога 9
+    const input = baseInput(1);
+    input.radius[0] = 2; // мировой радиус сам по себе меньше порога
+    const result = selectLabels(input, camera, WIDTH, HEIGHT);
+    expect(result).toEqual([0]);
+  });
+
+  it('крупный в мировых координатах узел не подписывается сам по себе на маленьком масштабе', () => {
+    const camera = scaledCamera(0.1); // мировой радиус 50 * scale 0.1 = экранный 5 < порога
+    const input = baseInput(1);
+    input.radius[0] = 50;
+    const result = selectLabels(input, camera, WIDTH, HEIGHT);
+    expect(result).toEqual([]);
+  });
+
+  it('отсечка по краю экрана идёт через camera.toScreen (масштаб и смещение), а не по мировым координатам напрямую', () => {
+    const camera = scaledCamera(0.5, 300, 300); // экран = мир·0.5 + 300
+    const input = baseInput(1);
+    input.radius[0] = 20; // крупный, чтобы попадание зависело только от положения
+    input.positions[0] = 1000; // далеко за пределами width=800 без учёта камеры
+    input.positions[1] = 0;
+    // Экранная позиция: 1000*0.5 + 300 = 800, экранный радиус 20*0.5=10 —
+    // sx - r = 790 ≤ width(800) + 40, узел виден.
+    const result = selectLabels(input, camera, WIDTH, HEIGHT);
+    expect(result).toEqual([0]);
+  });
+
+  it('узел с «безопасными» мировыми координатами обрезается, если камера уводит его за экран', () => {
+    const camera = scaledCamera(1, -10000, 0); // огромный сдвиг влево
+    const input = baseInput(1);
+    input.radius[0] = 20;
+    input.positions[0] = 0; // в мировых координатах как будто в кадре
+    input.positions[1] = 0;
+    const result = selectLabels(input, camera, WIDTH, HEIGHT);
     expect(result).toEqual([]);
   });
 
@@ -153,12 +263,35 @@ describe('selectLabels', () => {
     expect(result).toEqual([2, 1, 0, 3]);
   });
 
-  it('длина результата не превышает limit', () => {
-    const count = 10;
-    const input = baseInput(count);
-    for (let i = 0; i < count; i++) input.radius[i] = 20;
+  it('внутри одной группы приоритета сортирует по радиусу, а не по порядку вставки', () => {
+    const input = baseInput(3);
+    // Радиусы намеренно расставлены в порядке, обратном желаемому выводу: ни
+    // один из узлов не наведён и не найден (одна группа приоритета), и если
+    // бы сортировка не сравнивала радиус (мутант «компаратор возвращает 0»,
+    // стабильная сортировка сохранила бы порядок вставки — [0, 1, 2]), тест
+    // не заметил бы разницы. Здесь порядок вставки и порядок по радиусу
+    // расходятся полностью, поэтому ложноположительный «0» ловится.
+    input.radius[0] = 10;
+    input.radius[1] = 20;
+    input.radius[2] = 15;
+    const result = selectLabels(input, identityCamera, WIDTH, HEIGHT);
+    expect(result).toEqual([1, 2, 0]);
+  });
+
+  it('при обрезке по limit уцелевают крупнейшие по экранному радиусу, а не первые по обходу', () => {
+    const input = baseInput(5);
+    // Индекс 0 стоит первым по обходу, но не входит в тройку крупнейших —
+    // если бы limit просто резал по порядку вставки (или сортировка не
+    // работала), в выживших оказался бы он, а не узел 4.
+    input.radius[0] = 12;
+    input.radius[1] = 30;
+    input.radius[2] = 9;
+    input.radius[3] = 25;
+    input.radius[4] = 18;
     const result = selectLabels(input, identityCamera, WIDTH, HEIGHT, { limit: 3 });
-    expect(result).toHaveLength(3);
+    // По убыванию радиуса: 1(30), 3(25), 4(18), 0(12), 2(9) — уцелеть должны
+    // именно первые три из этого порядка.
+    expect(result).toEqual([1, 3, 4]);
   });
 
   it('без явного limit использует DEFAULT_LABEL_LIMIT', () => {
