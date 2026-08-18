@@ -22,6 +22,14 @@ export interface SidebarHandles {
  */
 const NOISE = ['node_modules', 'vendor', 'dist', 'build', 'target', '.git'];
 
+/**
+ * Счётчик установок панели — источник уникальных id для программной связки
+ * заголовка секции с полем ввода (`aria-labelledby`). `Math.random()` в
+ * `web/` запрещён, а несколько смонтированных панелей в одном документе не
+ * должны получать одинаковый id.
+ */
+let sidebarInstanceCounter = 0;
+
 /** Самые частые расширения файлов, по убыванию. */
 export function topExtensions(pack: Pack, limit: number): string[] {
   const counts = new Map<string, number>();
@@ -53,6 +61,7 @@ export function mountSidebar(root: HTMLElement, options: SidebarOptions): Sideba
   const { pack } = options;
   root.hidden = false;
   root.replaceChildren();
+  const instanceId = sidebarInstanceCounter++;
 
   const checkedAuthors = new Set<number>(pack.authors.map((_, index) => index));
   const chosenExtensions = new Set<string>();
@@ -101,10 +110,16 @@ export function mountSidebar(root: HTMLElement, options: SidebarOptions): Sideba
   });
 
   const pathBox = section('Путь');
+  // Подсказка (placeholder) распознаётся ассистивными технологиями не так
+  // надёжно, как настоящее имя, и никак не связана с заголовком раздела —
+  // связываем поле с заголовком явно через aria-labelledby.
+  const pathHeading = pathBox.querySelector('h2')!;
+  pathHeading.id = `sidebar-path-heading-${instanceId}`;
   const pathField = document.createElement('input');
   pathField.type = 'text';
   pathField.dataset.role = 'path';
   pathField.placeholder = 'например, src/* или utils';
+  pathField.setAttribute('aria-labelledby', pathHeading.id);
   pathField.addEventListener('input', () => {
     pathQuery = pathField.value;
     emitFilter();
@@ -149,65 +164,99 @@ export function mountSidebar(root: HTMLElement, options: SidebarOptions): Sideba
   /** Раскрытые узлы: дети строятся лениво и только для них. */
   const expanded = new Set<number>([0]);
 
+  /**
+   * Строит одну строку навигатора и контейнер её потомков. Раскрытие и
+   * схлопывание по клику трогают только этот контейнер, а не всю панель:
+   * прежде клик по стрелке звал полную перестройку от корня, и кнопка, на
+   * которой стоял клавиатурный фокус, удалялась из документа и создавалась
+   * заново — фокус откатывался в начало панели на каждый шаг по вложенному
+   * дереву. Разово перестраивать только своё поддерево дешевле и не рвёт
+   * фокус: сама кнопка `toggle` никогда не пересоздаётся.
+   */
+  function renderRow(child: number, container: HTMLElement): void {
+    const folderName = pack.paths[child]!.slice(pack.paths[child]!.lastIndexOf('/') + 1);
+
+    const row = document.createElement('div');
+    row.className = 'tree-row';
+
+    const childrenBox = document.createElement('div');
+    childrenBox.className = 'tree-children';
+
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.dataset.toggle = String(child);
+    // Имя папки — часть доступного имени каждой кнопки строки, иначе
+    // пользователь скринридера слышит в списке из десятка папок одну и ту же
+    // фразу и не может понять, к какой из них она относится.
+    function updateToggle(): void {
+      toggle.textContent = expanded.has(child) ? '▾' : '▸';
+      toggle.setAttribute(
+        'aria-label',
+        expanded.has(child) ? `Свернуть список: ${folderName}` : `Развернуть список: ${folderName}`,
+      );
+    }
+    updateToggle();
+    toggle.addEventListener('click', () => {
+      if (expanded.has(child)) {
+        expanded.delete(child);
+        // Схлопывание — единственный случай, когда содержимому поддерева
+        // действительно место исчезнуть из документа: пользователь только
+        // что нажал именно на эту кнопку, а не на что-то внутри.
+        childrenBox.replaceChildren();
+      } else {
+        expanded.add(child);
+        renderTree(child, childrenBox);
+      }
+      updateToggle();
+    });
+
+    const show = document.createElement('input');
+    show.type = 'checkbox';
+    show.checked = !hidden.has(child);
+    show.dataset.hide = String(child);
+    show.setAttribute('aria-label', `Показывать папку: ${folderName}`);
+    show.addEventListener('change', () => {
+      if (show.checked) hidden.delete(child);
+      else hidden.add(child);
+      emitVisibility();
+    });
+
+    const fold = document.createElement('button');
+    fold.type = 'button';
+    fold.dataset.collapse = String(child);
+    function updateFold(): void {
+      fold.textContent = collapsed.has(child) ? '◼' : '◻';
+      fold.setAttribute(
+        'aria-label',
+        collapsed.has(child)
+          ? `Развернуть папку на сцене: ${folderName}`
+          : `Свернуть папку в один узел: ${folderName}`,
+      );
+    }
+    updateFold();
+    fold.addEventListener('click', () => {
+      if (collapsed.has(child)) collapsed.delete(child);
+      else collapsed.add(child);
+      // Значок сменился — доступное имя обязано смениться вместе с ним,
+      // иначе кнопка после клика говорит скринридеру неправду о своём
+      // текущем действии.
+      updateFold();
+      emitVisibility();
+    });
+
+    const name = document.createElement('span');
+    name.textContent = folderName;
+
+    row.append(toggle, show, fold, name);
+    container.append(row, childrenBox);
+
+    if (expanded.has(child)) renderTree(child, childrenBox);
+  }
+
   function renderTree(parent: number, container: HTMLElement): void {
     for (const child of directChildren(pack, parent)) {
       if (pack.pathIsDir[child] !== 1) continue; // скрывать можно только папки
-
-      const row = document.createElement('div');
-      row.className = 'tree-row';
-
-      const toggle = document.createElement('button');
-      toggle.type = 'button';
-      toggle.textContent = expanded.has(child) ? '▾' : '▸';
-      toggle.setAttribute('aria-label', expanded.has(child) ? 'Свернуть список' : 'Развернуть список');
-      toggle.addEventListener('click', () => {
-        if (expanded.has(child)) expanded.delete(child);
-        else expanded.add(child);
-        refreshTree();
-      });
-
-      const show = document.createElement('input');
-      show.type = 'checkbox';
-      show.checked = !hidden.has(child);
-      show.dataset.hide = String(child);
-      show.setAttribute('aria-label', 'Показывать папку');
-      show.addEventListener('change', () => {
-        if (show.checked) hidden.delete(child);
-        else hidden.add(child);
-        emitVisibility();
-      });
-
-      const fold = document.createElement('button');
-      fold.type = 'button';
-      fold.dataset.collapse = String(child);
-      fold.textContent = collapsed.has(child) ? '◼' : '◻';
-      fold.setAttribute('aria-label', collapsed.has(child) ? 'Развернуть папку на сцене' : 'Свернуть папку в один узел');
-      fold.addEventListener('click', () => {
-        if (collapsed.has(child)) collapsed.delete(child);
-        else collapsed.add(child);
-        fold.textContent = collapsed.has(child) ? '◼' : '◻';
-        // Значок сменился — доступное имя обязано смениться вместе с ним,
-        // иначе кнопка после клика говорит скринридеру неправду о своём
-        // текущем действии.
-        fold.setAttribute(
-          'aria-label',
-          collapsed.has(child) ? 'Развернуть папку на сцене' : 'Свернуть папку в один узел',
-        );
-        emitVisibility();
-      });
-
-      const name = document.createElement('span');
-      name.textContent = pack.paths[child]!.slice(pack.paths[child]!.lastIndexOf('/') + 1);
-
-      row.append(toggle, show, fold, name);
-      container.append(row);
-
-      if (expanded.has(child)) {
-        const children = document.createElement('div');
-        children.className = 'tree-children';
-        container.append(children);
-        renderTree(child, children);
-      }
+      renderRow(child, container);
     }
   }
 

@@ -95,4 +95,56 @@ describe('mountSidebar', () => {
     handles.unmount();
     expect(root.children.length).toBe(0);
   });
+
+  it('не теряет клавиатурный фокус при раскрытии своего узла', () => {
+    const root = document.createElement('div');
+    document.body.append(root);
+    mountSidebar(root, { pack, onFilter: () => {}, onVisibility: () => {} });
+
+    const toggle = root.querySelector<HTMLButtonElement>(`button[data-toggle="${id('src')}"]`)!;
+    toggle.focus();
+    expect(document.activeElement).toBe(toggle);
+    toggle.click();
+    // Раскрытие перестраивает только контейнер потомков, а не всю панель:
+    // кнопка, на которой стоял фокус, не должна пересоздаваться.
+    expect(document.activeElement).toBe(toggle);
+  });
+
+  it('меняет и значок, и доступное имя кнопки сворачивания при клике', () => {
+    const root = document.createElement('div');
+    document.body.append(root);
+    mountSidebar(root, { pack, onFilter: () => {}, onVisibility: () => {} });
+
+    const fold = root.querySelector<HTMLButtonElement>(`button[data-collapse="${id('src')}"]`)!;
+    const iconBefore = fold.textContent;
+    const labelBefore = fold.getAttribute('aria-label');
+
+    fold.click();
+
+    expect(fold.textContent).not.toBe(iconBefore);
+    expect(fold.getAttribute('aria-label')).not.toBe(labelBefore);
+    expect(fold.getAttribute('aria-label')).toContain('src');
+  });
+
+  it('называет папку в доступных именах чекбокса и кнопки сворачивания строки', () => {
+    const root = document.createElement('div');
+    document.body.append(root);
+    mountSidebar(root, { pack, onFilter: () => {}, onVisibility: () => {} });
+
+    const show = root.querySelector<HTMLInputElement>(`input[data-hide="${id('src')}"]`)!;
+    const fold = root.querySelector<HTMLButtonElement>(`button[data-collapse="${id('src')}"]`)!;
+    expect(show.getAttribute('aria-label')).toContain('src');
+    expect(fold.getAttribute('aria-label')).toContain('src');
+  });
+
+  it('связывает поле пути с заголовком раздела', () => {
+    const root = document.createElement('div');
+    document.body.append(root);
+    mountSidebar(root, { pack, onFilter: () => {}, onVisibility: () => {} });
+
+    const field = root.querySelector<HTMLInputElement>('input[data-role="path"]')!;
+    const labelledBy = field.getAttribute('aria-labelledby');
+    expect(labelledBy).toBeTruthy();
+    expect(document.getElementById(labelledBy!)?.textContent).toBe('Путь');
+  });
 });
