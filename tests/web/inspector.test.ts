@@ -56,7 +56,9 @@ describe('карточка узла', () => {
 
     expect(root.hidden).toBe(false);
     expect(root.textContent).toContain('src/a.ts');
-    expect(root.textContent).toContain('10');
+    // Не просто '10': подстрока нашлась бы и в дате рождения (2023-11-14) —
+    // проверяем ровно ту строку, которую печатает сводка.
+    expect(root.textContent).toContain('строк: 10');
     expect(root.textContent).toContain('Аня Петрова');
     // Автор, не касавшийся файла, в карточке не появляется.
     expect(root.textContent).not.toContain('Бо Ли');
@@ -67,8 +69,10 @@ describe('карточка узла', () => {
     const root = document.createElement('aside');
     const handles = mountInspector(root, { pack });
     handles.show(infoFor('src'));
-    expect(root.textContent).toContain('файл');
-    expect(root.textContent).toContain('14'); // 10 + 4 строк
+    // Не просто '14': подстрока нашлась бы и в дате рождения (2023-11-14) —
+    // проверяем ровно строки, которые печатает сводка (10 + 4 строк, 2 файла).
+    expect(root.textContent).toContain('строк: 14');
+    expect(root.textContent).toContain('файлов: 2');
     handles.unmount();
   });
 
@@ -82,6 +86,21 @@ describe('карточка узла', () => {
     handles.unmount();
   });
 
+  it('пересборка карточки не создаёт кнопку закрытия заново', () => {
+    const root = document.createElement('aside');
+    const handles = mountInspector(root, { pack });
+    handles.show(infoFor('src/a.ts'));
+    const button = root.querySelector('button');
+
+    // На воспроизведении show() зовётся до нескольких раз в секунду (см.
+    // INSPECTOR_REBUILD_INTERVAL_MS в web/main.ts). Полная пересборка на
+    // каждый вызов рвала бы клавиатурный фокус на кнопке закрытия — она
+    // обязана оставаться тем же самым элементом, а не toBeTruthy().
+    handles.show(infoFor('docs/c.md'));
+    expect(root.querySelector('button')).toBe(button);
+    handles.unmount();
+  });
+
   it('закрывается кнопкой и Escape, сообщая об этом наружу', () => {
     const root = document.createElement('aside');
     let closed = 0;
@@ -89,7 +108,9 @@ describe('карточка узла', () => {
     handles.show(infoFor('src/a.ts'));
 
     const button = root.querySelector('button');
-    expect(button?.getAttribute('aria-label')).toBeTruthy();
+    // Не просто toBeTruthy(): '✕' сам по себе тоже truthy и ничего не значит
+    // для скринридера — проверяем осмысленный текст.
+    expect(button?.getAttribute('aria-label')).toBe('Закрыть карточку узла');
     button!.click();
     expect(root.hidden).toBe(true);
     expect(closed).toBe(1);
@@ -101,12 +122,43 @@ describe('карточка узла', () => {
     handles.unmount();
   });
 
+  it('Escape в текстовом поле карточку не закрывает, а вне поля — закрывает', () => {
+    const root = document.createElement('aside');
+    let closed = 0;
+    const handles = mountInspector(root, { pack, onClose: () => closed++ });
+    handles.show(infoFor('src/a.ts'));
+
+    const input = document.createElement('input');
+    document.body.append(input);
+    // dispatchEvent прямо на input — событие всплывает к document с
+    // event.target === input, как при настоящем нажатии в сфокусированном
+    // поле. У Escape там своё поведение (отменить правку) — глобальный
+    // обработчик карточки не должен его отбирать.
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    expect(root.hidden).toBe(false);
+    expect(closed).toBe(0);
+
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    expect(root.hidden).toBe(true);
+    expect(closed).toBe(1);
+
+    input.remove();
+    handles.unmount();
+  });
+
   it('unmount снимает обработчик Escape', () => {
     const root = document.createElement('aside');
     let closed = 0;
     const handles = mountInspector(root, { pack, onClose: () => closed++ });
     handles.show(infoFor('src/a.ts'));
     handles.unmount();
+
+    // unmount() сам ставит root.hidden = true, а обработчик выходит по
+    // `if (root.hidden) return` — без этого шага тест прошёл бы, даже если
+    // убрать document.removeEventListener из unmount(), потому что guard по
+    // hidden молчаливо спас бы дефектную реализацию. Выставляем hidden в
+    // обход hide()/show(), чтобы проверить именно снятие подписки.
+    root.hidden = false;
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
     expect(closed).toBe(0);
   });

@@ -2,7 +2,8 @@ import type { Pack } from '../../src/model/types.js';
 import { avatarColor } from '../render/avatar.js';
 import type { NodeInfo } from '../state/node-info.js';
 import { drawHistogram } from './histogram.js';
-import { formatCommitLabel } from './transport.js';
+import { commitDateLabel, formatCommitLabel } from './transport.js';
+import { ownsTextInput } from './keys.js';
 
 export interface InspectorOptions {
   pack: Pack;
@@ -10,16 +11,15 @@ export interface InspectorOptions {
 }
 
 export interface InspectorHandles {
-  /** Показывает карточку узла, полностью заменяя прежнее содержимое. */
+  /** Показывает карточку узла, обновляя содержимое на месте. */
   show(info: NodeInfo): void;
   hide(): void;
   unmount(): void;
 }
 
-/** Дата коммита в формате `YYYY-MM-DD`, тот же формат, что и в подписи транспорта. */
-function commitDate(pack: Pack, commit: number): string {
-  if (commit < 0) return '—';
-  return new Date(pack.commitTs[commit]! * 1000).toISOString().slice(0, 10);
+/** Дата коммита или тире, если такого коммита нет (birthCommit/lastCommit == -1). */
+function commitDateOrDash(pack: Pack, commit: number): string {
+  return commit < 0 ? '—' : commitDateLabel(pack, commit);
 }
 
 function row(...children: (Node | string)[]): HTMLDivElement {
@@ -34,48 +34,71 @@ export function mountInspector(root: HTMLElement, options: InspectorOptions): In
   root.hidden = true;
   root.replaceChildren();
 
+  function hide(): void {
+    root.hidden = true;
+  }
+
+  // Скелет карточки строится один раз при монтировании, а не на каждый show():
+  // на воспроизведении show() зовётся до нескольких раз в секунду (см.
+  // INSPECTOR_REBUILD_INTERVAL_MS в web/main.ts), и полная пересборка через
+  // replaceChildren на каждый вызов рвала бы клавиатурный фокус на кнопке
+  // закрытия и выделение текста коммита для копирования. show() ниже трогает
+  // только содержимое: текстовые узлы, список авторов, список коммитов и
+  // отрисовку канвы — сами элементы-контейнеры (и особенно кнопка закрытия)
+  // переживают любое число повторных show().
+  const closeButton = document.createElement('button');
+  closeButton.type = 'button';
+  closeButton.className = 'close';
+  closeButton.textContent = '✕';
+  closeButton.setAttribute('aria-label', 'Закрыть карточку узла');
+  closeButton.addEventListener('click', () => {
+    hide();
+    options.onClose?.();
+  });
+
+  const heading = document.createElement('h2');
+  const path = document.createElement('div');
+  path.className = 'path';
+  const summary = document.createElement('div');
+  summary.className = 'row';
+  const born = document.createElement('div');
+  born.className = 'row';
+  const last = document.createElement('div');
+  last.className = 'row';
+  const contributorsBox = document.createElement('div');
+  const sparkline = document.createElement('canvas');
+  const commitsBox = document.createElement('div');
+
+  root.append(closeButton, heading, path, summary, born, last, contributorsBox, sparkline, commitsBox);
+
   const handleKeydown = (event: KeyboardEvent): void => {
     if (event.key !== 'Escape') return;
+    // Escape закрывает открытый список или отменяет ввод в текстовом поле —
+    // у поля своё поведение на эту клавишу, и глобальный обработчик не должен
+    // его отбирать (тот же вопрос, что и с пробелом в web/ui/transport.ts,
+    // решён тем же общим помощником).
+    if (ownsTextInput(event.target)) return;
     if (root.hidden) return;
     hide();
     options.onClose?.();
   };
   document.addEventListener('keydown', handleKeydown);
 
-  function hide(): void {
-    root.hidden = true;
-  }
-
   function show(info: NodeInfo): void {
     root.hidden = false;
 
-    const closeButton = document.createElement('button');
-    closeButton.type = 'button';
-    closeButton.className = 'close';
-    closeButton.textContent = '✕';
-    closeButton.setAttribute('aria-label', 'Закрыть карточку узла');
-    closeButton.addEventListener('click', () => {
-      hide();
-      options.onClose?.();
-    });
-
-    const heading = document.createElement('h2');
     heading.textContent = info.name;
-
-    const path = document.createElement('div');
-    path.className = 'path';
     path.textContent = info.fullPath === '' ? pack.meta.repoName : info.fullPath;
 
     const summaryParts: string[] = [`строк: ${info.lines}`];
     if (info.isDir) summaryParts.push(`файлов: ${info.files}`);
     if (!info.alive) summaryParts.push('удалён');
-    const summary = row(summaryParts.join(' · '));
+    summary.textContent = summaryParts.join(' · ');
 
-    const born = row(`рождение: ${commitDate(pack, info.birthCommit)}`);
-    const last = row(`последнее изменение: ${commitDate(pack, info.lastCommit)}`);
+    born.textContent = `рождение: ${commitDateOrDash(pack, info.birthCommit)}`;
+    last.textContent = `последнее изменение: ${commitDateOrDash(pack, info.lastCommit)}`;
 
-    const contributorsBox = document.createElement('div');
-    for (const contributor of info.contributors) {
+    const contributorRows = info.contributors.map((contributor) => {
       const author = pack.authors[contributor.author];
       const dot = document.createElement('span');
       dot.className = 'dot';
@@ -84,33 +107,22 @@ export function mountInspector(root: HTMLElement, options: InspectorOptions): In
       name.textContent = author ? author.name || author.email : '?';
       const count = document.createElement('span');
       count.textContent = `${contributor.commits}`;
-      contributorsBox.append(row(dot, name, count));
-    }
+      return row(dot, name, count);
+    });
+    contributorsBox.replaceChildren(...contributorRows);
 
-    const sparkline = document.createElement('canvas');
-
-    const commitsBox = document.createElement('div');
-    for (const commit of info.recentCommits) {
+    const commitLines = info.recentCommits.map((commit) => {
       const line = document.createElement('div');
       line.className = 'commit';
       line.textContent = formatCommitLabel(pack, commit);
-      commitsBox.append(line);
-    }
+      return line;
+    });
+    commitsBox.replaceChildren(...commitLines);
 
-    root.replaceChildren(
-      closeButton,
-      heading,
-      path,
-      summary,
-      born,
-      last,
-      contributorsBox,
-      sparkline,
-      commitsBox,
-    );
-
-    // Гистограмма рисуется после вставки в документ: до этого у канвы нет
-    // размера, а drawHistogram читает clientWidth/clientHeight.
+    // Гистограмма рисуется после того, как канва оказалась в документе: до
+    // этого у неё нет размера, а drawHistogram читает clientWidth/clientHeight.
+    // Канва — тот же самый элемент между вызовами show(), поэтому достаточно
+    // просто перерисовать её содержимое.
     drawHistogram(sparkline, info.sparkline);
   }
 
