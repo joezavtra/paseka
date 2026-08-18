@@ -34,17 +34,25 @@ describe('buildActiveLinks', () => {
 });
 
 describe('radiusFor', () => {
-  it('растёт как корень из числа строк', () => {
+  it('растёт как корень из числа коммитов', () => {
     expect(radiusFor(0, false)).toBeCloseTo(2.5, 1);
     expect(radiusFor(100, false)).toBeGreaterThan(radiusFor(25, false));
     expect(radiusFor(1_000_000, false)).toBeLessThanOrEqual(40);
+  });
+
+  it('разница между редким и частым файлом видна глазом', () => {
+    // Коммитов у файла десятки там, где строк были тысячи: на прежнем
+    // множителе весь репозиторий выродился бы в одинаковые точки, и метрика
+    // сменилась бы впустую. Проверяем не формулу, а различимость на экране.
+    expect(radiusFor(30, false) - radiusFor(1, false)).toBeGreaterThan(4);
+    expect(radiusFor(100, false) - radiusFor(10, false)).toBeGreaterThan(4);
   });
 
   it('обычная директория без размера остаётся мелкой', () => {
     expect(radiusFor(0, true)).toBeCloseTo(3, 1);
   });
 
-  it('свёрнутая директория растёт от размера, как и файл, но от своей базы', () => {
+  it('свёрнутая директория растёт от веса, как и файл, но от своей базы', () => {
     const empty = radiusFor(0, true);
     const big = radiusFor(10_000, true);
     // Заметно крупнее пустой директории, но не крупнее общего потолка.
@@ -52,7 +60,7 @@ describe('radiusFor', () => {
     expect(big).toBeLessThanOrEqual(40);
   });
 
-  it('клэмпит отрицательное число строк', () => {
+  it('клэмпит отрицательное число коммитов', () => {
     expect(radiusFor(-50, false)).toBeCloseTo(2.5, 1);
   });
 });

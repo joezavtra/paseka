@@ -15,8 +15,13 @@ export interface VisibilityResult {
   representative: Int32Array;
   /** Рисуемые узлы: путь жив и представляет сам себя. */
   drawn: Uint8Array;
-  /** Размер узла в строках; у свёрнутой папки — сумма живых потомков. */
-  sizes: Int32Array;
+  /**
+   * Вес узла, из которого считается его радиус: число коммитов, задевших путь
+   * (см. TimeEngine.commits). У свёрнутой папки — сумма по живым потомкам,
+   * поэтому она рисуется на столько, сколько работы в ней спрятано. У обычной
+   * папки ноль: её потомки представляют сами себя.
+   */
+  weight: Int32Array;
   /** Сколько живых файлов представляет узел: у свёрнутой папки — всё, что внутри. */
   files: Int32Array;
 }
@@ -33,7 +38,7 @@ export interface VisibilityResult {
 export function resolveVisibility(
   pack: Pack,
   alive: Uint8Array,
-  sizes: Int32Array,
+  weight: Int32Array,
   spec: VisibilitySpec,
 ): VisibilityResult {
   const { pathCount } = pack.meta;
@@ -71,8 +76,8 @@ export function resolveVisibility(
     if (alive[path] === 1 && representative[path] === path) drawn[path] = 1;
   }
 
-  // Размер свёрнутой папки — сумма живых потомков: узел должен выглядеть на
-  // столько, сколько кода в нём спрятано. Число файлов копится тем же
+  // Вес свёрнутой папки — сумма живых потомков: узел должен выглядеть на
+  // столько, сколько работы в нём спрятано. Число файлов копится тем же
   // проходом: подписи свёрнутой папки (§9) нужен именно счётчик файлов, а не
   // строк, и заводить для него отдельный обход по тем же путям было бы
   // двойной работой.
@@ -80,13 +85,13 @@ export function resolveVisibility(
     if (alive[path] !== 1) continue;
     const rep = representative[path];
     if (rep === HIDDEN) continue;
-    result[rep] += sizes[path];
+    result[rep] += weight[path];
     // Каталоги в счётчик не входят: пользователю нужно число файлов, а не
     // число узлов поддерева.
     if (pack.pathIsDir[path] !== 1) files[rep] += 1;
   }
 
-  return { representative, drawn, sizes: result, files };
+  return { representative, drawn, weight: result, files };
 }
 
 /**

@@ -244,3 +244,118 @@ describe('TimeEngine.step и синтетические события', () => {
     expect(engine.alive[pack.paths.indexOf('потерянный.txt')]).toBe(0);
   });
 });
+
+describe('TimeEngine.commits', () => {
+  const change = (path: string, kind: 'add' | 'modify' | 'delete') => ({
+    path,
+    kind,
+    added: kind === 'delete' ? 0 : 3,
+    deleted: 0,
+    binary: false,
+  });
+  const commit = (index: number, changes: RawCommit['changes']): RawCommit => ({
+    hash: `h${index}`,
+    authorName: 'A',
+    authorEmail: 'a@e.com',
+    timestamp: 1_700_000_000 + index * 60,
+    subject: `c${index}`,
+    changes,
+  });
+
+  /** История: a.ts правят трижды, b.ts заводят и удаляют, c.ts тронут однажды. */
+  const pack = buildPack(
+    [
+      commit(0, [change('src/a.ts', 'add'), change('src/b.ts', 'add')]),
+      commit(1, [change('src/a.ts', 'modify')]),
+      commit(2, [change('src/a.ts', 'modify'), change('src/b.ts', 'delete')]),
+      commit(3, [change('src/c.ts', 'add')]),
+    ],
+    { repoName: 'demo', head: 'h3' },
+  );
+  const id = (path: string): number => {
+    const index = pack.paths.indexOf(path);
+    if (index < 0) throw new Error(`нет пути ${path}`);
+    return index;
+  };
+
+  it('до начала истории вес нулевой у всех', () => {
+    const engine = new TimeEngine(pack);
+    engine.seek(BEFORE_HISTORY);
+    expect([...engine.commits]).toEqual(Array.from(engine.commits, () => 0));
+  });
+
+  it('считает коммиты, задевшие путь, на любом курсоре', () => {
+    const engine = new TimeEngine(pack);
+    engine.seek(0);
+    expect(engine.commits[id('src/a.ts')]).toBe(1);
+    engine.seek(2);
+    expect(engine.commits[id('src/a.ts')]).toBe(3);
+    // Удалённый файл сохраняет вес: он показывает, сколько работы в него вложили.
+    expect(engine.commits[id('src/b.ts')]).toBe(2);
+    // Ещё не родившийся — ноль.
+    expect(engine.commits[id('src/c.ts')]).toBe(0);
+  });
+
+  it('шаг наращивает вес так же, как полный пересчёт', () => {
+    const stepped = new TimeEngine(pack);
+    stepped.seek(BEFORE_HISTORY);
+    for (let i = 0; i <= 3; i++) stepped.step();
+
+    const recomputed = new TimeEngine(pack);
+    recomputed.seek(3);
+
+    expect([...stepped.commits]).toEqual([...recomputed.commits]);
+  });
+
+  it('у каталогов вес нулевой: события бывают только у файлов', () => {
+    const engine = new TimeEngine(pack);
+    engine.seek(3);
+    expect(engine.commits[id('src')]).toBe(0);
+    expect(engine.commits[0]).toBe(0);
+  });
+
+  it('синтетическое удаление не добавляет веса тому же коммиту', () => {
+    // Сверка с деревом HEAD дописывает удаление файла, которого нет в рабочем
+    // дереве, тем же последним коммитом. У пути тогда два события в одном
+    // коммите, и вес обязан вырасти на единицу, а не на две: автор сделал одну
+    // правку, а вторая запись — служебная.
+    const withSynthetic = buildPack(
+      [
+        commit(0, [change('src/a.ts', 'add'), change('src/gone.ts', 'add')]),
+        commit(1, [change('src/a.ts', 'modify'), change('src/gone.ts', 'modify')]),
+      ],
+      { repoName: 'demo', head: 'h1', headFiles: new Set(['src/a.ts']) },
+    );
+    const gone = withSynthetic.paths.indexOf('src/gone.ts');
+    expect(gone).toBeGreaterThan(0);
+
+    // Предпосылка теста: у пути действительно два события в последнем коммите.
+    let inLastCommit = 0;
+    for (let k = withSynthetic.pathEventStart[gone]; k < withSynthetic.pathEventStart[gone + 1]; k++) {
+      if (withSynthetic.eventCommit[withSynthetic.pathEventIdx[k]] === 1) inLastCommit++;
+    }
+    expect(inLastCommit).toBe(2);
+
+    const recomputed = new TimeEngine(withSynthetic);
+    recomputed.seek(1);
+    expect(recomputed.commits[gone]).toBe(2);
+
+    const stepped = new TimeEngine(withSynthetic);
+    stepped.seek(BEFORE_HISTORY);
+    stepped.step();
+    stepped.step();
+    expect(stepped.commits[gone]).toBe(2);
+  });
+
+  it('на случайной истории шаг и пересчёт сходятся на каждом коммите', () => {
+    const random = buildPack(randomCommits(7, 25), { repoName: 'r', head: 'h' });
+    const stepped = new TimeEngine(random);
+    stepped.seek(BEFORE_HISTORY);
+    for (let cursor = 0; cursor < random.meta.commitCount; cursor++) {
+      stepped.step();
+      const recomputed = new TimeEngine(random);
+      recomputed.seek(cursor);
+      expect([...stepped.commits], `курсор ${cursor}`).toEqual([...recomputed.commits]);
+    }
+  });
+});
