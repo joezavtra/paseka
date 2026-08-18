@@ -86,6 +86,42 @@ describe('resolveVisibility', () => {
     expect(result.sizes[id('docs/c.md')]).toBe(5);
   });
 
+  it('свёрнутая папка получает число живых файлов поддерева, без подпапок', () => {
+    const result = resolveVisibility(pack, alive, sizesOf(), {
+      hidden: new Set(),
+      collapsed: new Set([id('src')]),
+    });
+    // src/deep/a.ts и src/b.ts — два файла; src/deep — подпапка и в счёт не идёт.
+    expect(result.files[id('src')]).toBe(2);
+    expect(result.files[id('docs/c.md')]).toBe(1);
+  });
+
+  it('у обычного файла своё число файлов равно единице', () => {
+    const result = resolveVisibility(pack, alive, sizesOf(), NOTHING);
+    expect(result.files[id('src/deep/a.ts')]).toBe(1);
+    expect(result.files[id('src/b.ts')]).toBe(1);
+    expect(result.files[id('docs/c.md')]).toBe(1);
+  });
+
+  it('мёртвые файлы не входят в счётчик представителя', () => {
+    const partly = new Uint8Array(alive);
+    partly[id('src/b.ts')] = 0;
+    const result = resolveVisibility(pack, partly, sizesOf(), {
+      hidden: new Set(),
+      collapsed: new Set([id('src')]),
+    });
+    expect(result.files[id('src')]).toBe(1);
+  });
+
+  it('скрытое поддерево не даёт файлов никому', () => {
+    const result = resolveVisibility(pack, alive, sizesOf(), {
+      hidden: new Set([id('src')]),
+      collapsed: new Set(),
+    });
+    expect(result.files[id('src')]).toBe(0);
+    expect(result.files[id('docs/c.md')]).toBe(1);
+  });
+
   it('вложенное сворачивание представляет верхним свёрнутым', () => {
     const result = resolveVisibility(pack, alive, sizesOf(), {
       hidden: new Set(),

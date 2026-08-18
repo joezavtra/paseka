@@ -22,8 +22,8 @@ interface Stub {
   fillAlpha: number[];
   /** Кисть на каждом stroke(). */
   strokes: string[];
-  /** Написанный текст вместе с кистью и местом. */
-  texts: { text: string; x: number; y: number; fill: string }[];
+  /** Написанный текст вместе с кистью, местом и прозрачностью. */
+  texts: { text: string; x: number; y: number; fill: string; alpha: number }[];
   /** Конец каждой квадратичной кривой: сюда бьёт луч. */
   curves: { cx: number; cy: number; x: number; y: number }[];
   /** Прозрачность на каждом stroke(): по ней видно затухание луча. */
@@ -42,7 +42,7 @@ function stubContext(): Stub {
   const fillAlpha: number[] = [];
   const strokes: string[] = [];
   const strokeAlpha: number[] = [];
-  const texts: { text: string; x: number; y: number; fill: string }[] = [];
+  const texts: { text: string; x: number; y: number; fill: string; alpha: number }[] = [];
   const curves: { cx: number; cy: number; x: number; y: number }[] = [];
   const stack: Record<string, unknown>[] = [];
 
@@ -71,7 +71,7 @@ function stubContext(): Stub {
       fillAlpha.push(Number(ctx.globalAlpha));
     },
     fillText(text: string, x: number, y: number) {
-      texts.push({ text, x, y, fill: String(ctx.fillStyle) });
+      texts.push({ text, x, y, fill: String(ctx.fillStyle), alpha: Number(ctx.globalAlpha) });
     },
     save() {
       const bag = ctx as unknown as Record<string, unknown>;
@@ -131,6 +131,11 @@ function sceneWithTwoNodes(): SceneInput {
       color: ['#111111', '#222222'],
       initials: ['АП', 'БЛ'],
       name: ['Аня Петрова', 'Бо Ли'],
+    },
+    labels: {
+      count: 0,
+      path: new Uint32Array(2),
+      text: [],
     },
   };
 }
@@ -334,6 +339,83 @@ describe('drawScene', () => {
     const { ctx, texts } = stubContext();
     drawScene(ctx, new Camera(), sceneWithTwoNodes(), 800, 600);
     expect(texts).toEqual([]);
+  });
+
+  it('рисует подпись для перечисленных в слое путей и только для них', () => {
+    const { ctx, texts } = stubContext();
+    const input = sceneWithTwoNodes();
+    input.labels = {
+      count: 1,
+      path: Uint32Array.from([1, 0]),
+      text: ['b.ts · 3 файла'],
+    };
+
+    drawScene(ctx, new Camera(), input, 800, 600);
+
+    expect(texts).toHaveLength(1);
+    expect(texts[0]!.text).toBe('b.ts · 3 файла');
+  });
+
+  it('текст подписи берётся из слоя, а не собирается отрисовкой', () => {
+    const { ctx, texts } = stubContext();
+    const input = sceneWithTwoNodes();
+    // Путь 0 в дереве называется иначе, чем текст в слое: если бы отрисовка
+    // собирала подпись сама, совпадения бы не случилось.
+    input.labels = { count: 1, path: Uint32Array.from([0]), text: ['совсем другой текст'] };
+
+    drawScene(ctx, new Camera(), input, 800, 600);
+
+    expect(texts.map((t) => t.text)).toEqual(['совсем другой текст']);
+  });
+
+  it('подпись сдвинута вправо от узла на его экранный радиус плюс 4px', () => {
+    const { ctx, texts } = stubContext();
+    const input = sceneWithTwoNodes();
+    // Узел 0 стоит в мировом (0, 0) с радиусом 3 — при единичном масштабе и
+    // нулевом смещении камеры экранные координаты совпадают с мировыми.
+    input.labels = { count: 1, path: Uint32Array.from([0]), text: ['x'] };
+
+    drawScene(ctx, new Camera(), input, 800, 600);
+
+    expect(texts[0]!.x).toBeCloseTo(0 + 3 + 4, 5);
+    expect(texts[0]!.y).toBeCloseTo(0, 5);
+  });
+
+  it('яркость подписи — яркость узла, но не ниже 0.5', () => {
+    const { ctx, texts } = stubContext();
+    const input = sceneWithTwoNodes();
+    input.alpha[0] = 0.1; // сильно погашен фильтром
+    input.labels = { count: 1, path: Uint32Array.from([0]), text: ['x'] };
+
+    drawScene(ctx, new Camera(), input, 800, 600);
+
+    expect(texts).toHaveLength(1);
+    expect(texts[0]!.alpha).toBeCloseTo(0.5, 5);
+  });
+
+  it('яркость подписи следует за яркостью узла выше порога 0.5', () => {
+    const { ctx, texts } = stubContext();
+    const input = sceneWithTwoNodes();
+    input.alpha[0] = 0.8;
+    input.labels = { count: 1, path: Uint32Array.from([0]), text: ['x'] };
+
+    drawScene(ctx, new Camera(), input, 800, 600);
+
+    expect(texts[0]!.alpha).toBeCloseTo(0.8, 5);
+  });
+
+  it('подпись рисуется поверх всего: после узлов, лучей и значков', () => {
+    const { ctx, texts } = stubContext();
+    const input = sceneWithTwoNodes();
+    input.beams.count = 1;
+    input.beams.author[0] = 0;
+    input.actors.active[1] = 1;
+    input.labels = { count: 1, path: Uint32Array.from([0]), text: ['подпись'] };
+
+    drawScene(ctx, new Camera(), input, 800, 600);
+
+    // Последний написанный текст — подпись узла, а не значок автора.
+    expect(texts[texts.length - 1]!.text).toBe('подпись');
   });
 
   it('возвращает контекст в то состояние, в котором его взял', () => {

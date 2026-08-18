@@ -31,6 +31,19 @@ export interface ActorLayer {
   name: string[];
 }
 
+/**
+ * Подписи узлов: параллельные массивы, длина значима до `count`. Отбор — чей
+ * путь сюда попал и в каком порядке — решает `selectLabels` (web/render/labels.ts);
+ * отрисовке остаётся только положить готовый текст рядом с узлом, а не
+ * собирать его на лету — иначе правило «показывать ли счётчик файлов»
+ * задваивалось бы между сборкой сцены и кадром.
+ */
+export interface LabelLayer {
+  count: number;
+  path: Uint32Array;
+  text: string[];
+}
+
 export interface SceneInput {
   /** Рисуемая маска; индекс — идентификатор пути. Не то же самое, что живость: скрытый или свёрнутый живой путь сюда не входит. */
   active: Uint8Array;
@@ -60,6 +73,7 @@ export interface SceneInput {
   hit: Uint8Array;
   beams: BeamLayer;
   actors: ActorLayer;
+  labels: LabelLayer;
 }
 
 /** Насколько узел раздувается на вспышке. */
@@ -237,6 +251,29 @@ export function drawScene(
     ctx.fillText(input.actors.name[author] ?? '', sx + 15, sy + 0.5);
     ctx.textAlign = 'center';
   }
+
+  // Подписи — последний слой (§11: рёбра → узлы → лучи → значки → подписи):
+  // текст должен лежать поверх всего остального, иначе его перекроют более
+  // ранние слои. Кто подписан и каким текстом решает selectLabels заранее —
+  // здесь только отрисовка готового слоя, без сборки текста на лету.
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.font = '11px ui-sans-serif, system-ui, sans-serif';
+  for (let i = 0; i < input.labels.count; i++) {
+    const path = input.labels.path[i]!;
+    const [sx, sy] = camera.toScreen(input.positions[path * 2]!, input.positions[path * 2 + 1]!);
+    const r = flashRadius(input.radius[path]!, input.flash[path]!) * camera.scale;
+    // Та же отсечка по bbox узла, что и у остальных слоёв: подпись всё равно
+    // держится вплотную к своему узлу, и если узел за кадром, то и она.
+    if (sx + r < 0 || sy + r < 0 || sx - r > width || sy - r > height) continue;
+    // Яркость подписи — яркость узла, но не ниже 0.5: иначе подпись
+    // наведённого узла в погашенной фильтром ветке была бы нечитаема, а
+    // именно наведённый узел — тот случай, где молчать нельзя (см. labels.ts).
+    ctx.globalAlpha = Math.max(0.5, input.alpha[path]!);
+    ctx.fillStyle = '#c9d1d9';
+    ctx.fillText(input.labels.text[i] ?? '', sx + r + 4, sy);
+  }
+  ctx.globalAlpha = 1;
 
   ctx.restore();
 }

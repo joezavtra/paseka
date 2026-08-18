@@ -7,6 +7,7 @@ import { drawScene, type SceneInput } from './render/scene.js';
 import { DIR_COLOR_INDEX, paletteIndexForPath } from './render/palette.js';
 import { deriveActivity } from './render/activity.js';
 import { NOTHING, pickNode } from './render/pick.js';
+import { DEFAULT_LABEL_LIMIT, labelFor, selectLabels } from './render/labels.js';
 import { Playback } from './time/playback.js';
 import { formatCommitLabel, mountTransport } from './ui/transport.js';
 import { mountSidebar, type SidebarHandles } from './ui/sidebar.js';
@@ -79,7 +80,7 @@ async function start(): Promise<void> {
   /** Пути, которым в прошлом кадре ставили свечение: гасим только их. */
   let litPaths: number[] = [];
 
-  const scene: SceneInput & { representative: Int32Array } = {
+  const scene: SceneInput & { representative: Int32Array; files: Int32Array } = {
     active: new Uint8Array(pathCount),
     positions: new Float32Array(pathCount * 2),
     radius: new Float32Array(pathCount),
@@ -97,6 +98,18 @@ async function start(): Promise<void> {
     // resolveVisibility. До первого вызова не используется — deriveActivity
     // не позовут раньше applyDelta.
     representative: new Int32Array(pathCount),
+    // Число живых файлов за представителем; заполняется в applyDelta тем же
+    // проходом resolveVisibility, что и representative — оно и нужно ровно
+    // там же, для подписи свёрнутой папки.
+    files: new Int32Array(pathCount),
+    // Слой подписей кадра; собирается в цикле кадра из selectLabels. Ёмкость
+    // массива путей — на весь лимит подписей, а не на pathCount: подписей на
+    // экране всегда на порядки меньше путей в истории.
+    labels: {
+      count: 0,
+      path: new Uint32Array(DEFAULT_LABEL_LIMIT),
+      text: [],
+    },
   };
 
   let visibilitySpec: VisibilitySpec = { hidden: new Set(), collapsed: new Set() };
@@ -394,6 +407,26 @@ async function start(): Promise<void> {
     pressX = event.offsetX;
     pressY = event.offsetY;
   });
+
+  /**
+   * Наведённый путь считается раз в кадр (см. `frame` ниже), а не на каждое
+   * событие указателя: подбор — проход по всем путям, и звать его на каждое
+   * `pointermove` было бы расточительно при большом дереве. Обработчик здесь
+   * только запоминает последние экранные координаты указателя.
+   */
+  let pointerX = -1;
+  let pointerY = -1;
+  canvas.addEventListener('pointermove', (event) => {
+    pointerX = event.offsetX;
+    pointerY = event.offsetY;
+  });
+  // Указатель ушёл с холста — наведения больше нет. Координаты сбрасываются в
+  // недостижимые для pickNode значения, и ближайший кадр сам увидит, что
+  // наводить не на что.
+  canvas.addEventListener('pointerleave', () => {
+    pointerX = -1;
+    pointerY = -1;
+  });
   canvas.addEventListener('click', (event) => {
     if (Math.hypot(event.offsetX - pressX, event.offsetY - pressY) > CLICK_SLOP_PX) return;
 
@@ -453,6 +486,9 @@ async function start(): Promise<void> {
     const visibility = resolveVisibility(pack, engine.alive, engine.sizes, visibilitySpec);
     scene.active.set(visibility.drawn);
     scene.representative = visibility.representative;
+    // Число живых файлов за представителем — тот же проход resolveVisibility,
+    // что и representative; нужно оно ровно там же: подписи свёрнутой папки.
+    scene.files = visibility.files;
     // Представители меняются вместе с видимостью и курсором — обводка и
     // счётчик совпадений обязаны переехать на новых представителей, даже
     // если сам образец поиска не менялся.
@@ -700,6 +736,30 @@ async function start(): Promise<void> {
   window.addEventListener('resize', resize);
   resize();
 
+  /** Имя пути без каталогов; у корня совпадает с именем репозитория. */
+  function basename(fullPath: string): string {
+    if (fullPath === '') return pack.meta.repoName;
+    return fullPath.slice(fullPath.lastIndexOf('/') + 1);
+  }
+
+  /**
+   * Текст подписи узла. Решение «показывать ли счётчик файлов» принимается
+   * ровно здесь и один раз: счётчик уместен только у свёрнутой папки (папка,
+   * и она есть в `visibilitySpec.collapsed`) — у обычного файла или у
+   * развёрнутой папки его нечего показывать, даже если внутри что-то есть.
+   * Без отдельной функции это решение расползлось бы по выражению-загадке в
+   * цикле сборки слоя.
+   */
+  function labelTextFor(path: number): string {
+    const isCollapsedFolder = pack.pathIsDir[path] === 1 && visibilitySpec.collapsed.has(path);
+    return labelFor(basename(pack.paths[path] ?? ''), isCollapsedFolder ? scene.files[path]! : 0);
+  }
+
+  /** Наведённый путь; NOTHING — указателя на дереве нет. Считается раз в кадр. */
+  let hovered = NOTHING;
+  /** Последнее выставленное состояние курсора — чтобы менять его только при смене. */
+  let cursorIsHover = false;
+
   // Исключение внутри кадра не должно молча остановить цикл на недостижимом
   // requestAnimationFrame: показываем причину и прекращаем цикл осознанно.
   let lastFrameMs = performance.now();
@@ -773,6 +833,40 @@ async function start(): Promise<void> {
           scene.alpha.set(alphaTo);
           alphaSettled = true;
         }
+      }
+
+      // Подбор наведённого узла — раз в кадр, а не на каждое движение
+      // указателя (см. объявление pointerX/pointerY выше): pickNode — проход
+      // по всем путям.
+      if (pointerX >= 0 && pointerY >= 0) {
+        const [wx, wy] = camera.toWorld(pointerX, pointerY);
+        hovered =
+          Number.isFinite(wx) && Number.isFinite(wy)
+            ? pickNode(scene, wx, wy, PICK_SLACK_PX / camera.scale)
+            : NOTHING;
+      } else {
+        hovered = NOTHING;
+      }
+      // Курсор меняется только при смене состояния наведения, а не каждый
+      // кадр: запись в canvas.style.cursor лишний раз — это стиль-трэшинг,
+      // которого лучше избегать даже при том, что браузер и сам не перекрасит
+      // пиксели зря.
+      const isHover = hovered !== NOTHING;
+      if (isHover !== cursorIsHover) {
+        canvas.style.cursor = isHover ? 'pointer' : 'default';
+        cursorIsHover = isHover;
+      }
+
+      // Слой подписей: кто подписан и в каком порядке решает selectLabels,
+      // здесь только перенос результата и сборка готового текста на узел.
+      const labelPaths = selectLabels(scene, camera, canvas.clientWidth, canvas.clientHeight, {
+        hovered,
+      });
+      scene.labels.count = labelPaths.length;
+      for (let i = 0; i < labelPaths.length; i++) {
+        const path = labelPaths[i]!;
+        scene.labels.path[i] = path;
+        scene.labels.text[i] = labelTextFor(path);
       }
 
       drawScene(ctx, camera, scene, canvas.clientWidth, canvas.clientHeight);
