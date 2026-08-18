@@ -26,6 +26,18 @@ export class TimeEngine {
   readonly alive: Uint8Array;
   /** Размер файла в строках; директории всегда 0. */
   readonly sizes: Int32Array;
+  /**
+   * Сколько коммитов задели путь на текущем курсоре; директории всегда 0 —
+   * события пишутся только на файлы, а сумма по поддереву считается там же,
+   * где решается, что рисуется (см. resolveVisibility).
+   *
+   * Считаются именно коммиты, а не события: обычно путь получает по событию на
+   * коммит, но сверка с деревом HEAD дописывает синтетическое удаление тем же
+   * последним коммитом, и без проверки «коммит сменился» такой файл получил бы
+   * лишнюю единицу веса — то есть выглядел бы крупнее соседей из-за служебной
+   * записи, которой автор не делал.
+   */
+  readonly commits: Int32Array;
 
   private readonly ownAlive: Uint8Array;
   private readonly liveChildren: Uint32Array;
@@ -37,6 +49,7 @@ export class TimeEngine {
     const { pathCount } = pack.meta;
     this.alive = new Uint8Array(pathCount);
     this.sizes = new Int32Array(pathCount);
+    this.commits = new Int32Array(pathCount);
     this.ownAlive = new Uint8Array(pathCount);
     this.liveChildren = new Uint32Array(pathCount);
 
@@ -81,6 +94,7 @@ export class TimeEngine {
     const { pathCount } = pack.meta;
     this.ownAlive.fill(0);
     this.sizes.fill(0);
+    this.commits.fill(0);
     this.liveChildren.fill(0);
     this.alive.fill(0);
     if (target < 0) return;
@@ -109,7 +123,21 @@ export class TimeEngine {
           hi = mid - 1;
         }
       }
-      if (found !== -1) this.sizes[p] = pack.pathEventLines[found];
+      if (found !== -1) {
+        this.sizes[p] = pack.pathEventLines[found];
+        // Все события пути до курсора включительно уже отсечены двоичным
+        // поиском — остаётся посчитать, сколько среди них различных коммитов.
+        let count = 0;
+        let previous = -1;
+        for (let k = pack.pathEventStart[p]; k <= found; k++) {
+          const commit = pack.eventCommit[pack.pathEventIdx[k]];
+          if (commit !== previous) {
+            count++;
+            previous = commit;
+          }
+        }
+        this.commits[p] = count;
+      }
     }
 
     // Идентификатор родителя всегда меньше идентификатора потомка, поэтому
@@ -160,7 +188,15 @@ export class TimeEngine {
         touchedSeen.add(path);
         touched.push(path);
       }
-      this.sizes[path] = pack.pathEventLines[this.linePos[e]];
+      const position = this.linePos[e];
+      this.sizes[path] = pack.pathEventLines[position];
+      // Второе событие того же пути в том же коммите веса не добавляет:
+      // сверка с деревом HEAD дописывает удаление последним коммитом.
+      const previous =
+        position > pack.pathEventStart[path]
+          ? pack.eventCommit[pack.pathEventIdx[position - 1]]
+          : -1;
+      if (previous !== next) this.commits[path]++;
 
       const own = kind === KIND_DELETE ? 0 : 1;
       if (own !== this.ownAlive[path]) {

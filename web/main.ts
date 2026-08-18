@@ -501,7 +501,7 @@ async function start(): Promise<void> {
    * только затронутых разницей (обязателен после `seek`: он не сообщает
    * затронутые пути, а размеры при этом меняются у любого выжившего файла —
    * без полного обхода радиусы остались бы от прежнего положения курсора; и
-   * после смены видимости — она меняет `visibility.sizes` у путей, которых
+   * после смены видимости — она меняет `visibility.weight` у путей, которых
    * движок времени вообще не считает изменившимися).
    * `rewound` — сдвинулся ли курсор по-настоящему. Только это должно гасить
    * буфер недавних событий и поле авторов: их цели пересчитываются через
@@ -510,7 +510,9 @@ async function start(): Promise<void> {
    * но `rewound: false`.
    */
   function applyDelta(delta: TimeDelta, fullRadius = false, rewound = false): void {
-    const visibility = resolveVisibility(pack, engine.alive, engine.sizes, visibilitySpec);
+    // Вес узла — число коммитов, а не строк: размер на сцене показывает, где
+    // кипит работа. Строки остаются в карточке узла, там они и уместны.
+    const visibility = resolveVisibility(pack, engine.alive, engine.commits, visibilitySpec);
     scene.active.set(visibility.drawn);
     scene.representative = visibility.representative;
     // Число живых файлов за представителем — тот же проход resolveVisibility,
@@ -539,10 +541,10 @@ async function start(): Promise<void> {
       // ровно то, что раньше происходило со скрытым путём.
       if (scene.active[path] !== 1) return;
       // Округляем до float32: scene.radius хранит именно его, и без округления
-      // сравнение «изменилось ли» было бы истинным всегда. Размер берём из
-      // visibility.sizes, а не из engine.sizes: у свёрнутой папки он должен
-      // отражать спрятанный внутри объём.
-      const next = Math.fround(radiusFor(visibility.sizes[path]!, pack.pathIsDir[path] === 1));
+      // сравнение «изменилось ли» было бы истинным всегда. Вес берём из
+      // visibility.weight, а не из engine.commits: у свёрнутой папки он должен
+      // отражать спрятанный внутри объём работы.
+      const next = Math.fround(radiusFor(visibility.weight[path]!, pack.pathIsDir[path] === 1));
       if (scene.radius[path] === next) return;
       scene.radius[path] = next;
       radiusIds.push(path);

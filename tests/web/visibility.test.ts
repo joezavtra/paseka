@@ -82,8 +82,8 @@ describe('resolveVisibility', () => {
       hidden: new Set(),
       collapsed: new Set([id('src')]),
     });
-    expect(result.sizes[id('src')]).toBe(30);
-    expect(result.sizes[id('docs/c.md')]).toBe(5);
+    expect(result.weight[id('src')]).toBe(30);
+    expect(result.weight[id('docs/c.md')]).toBe(5);
   });
 
   it('свёрнутая папка получает число живых файлов поддерева, без подпапок', () => {
@@ -138,7 +138,7 @@ describe('resolveVisibility', () => {
       collapsed: new Set([id('src')]),
     });
     expect(result.representative[id('src/deep/a.ts')]).toBe(HIDDEN);
-    expect(result.sizes[id('src')]).toBe(20);
+    expect(result.weight[id('src')]).toBe(20);
   });
 
   it('мёртвые пути не рисуются и не попадают в размер представителя', () => {
@@ -149,7 +149,7 @@ describe('resolveVisibility', () => {
       collapsed: new Set([id('src')]),
     });
     expect(result.drawn[id('src/b.ts')]).toBe(0);
-    expect(result.sizes[id('src')]).toBe(10);
+    expect(result.weight[id('src')]).toBe(10);
   });
 
   it('скрытый корень убирает всё', () => {
