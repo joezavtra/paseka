@@ -93,6 +93,12 @@ async function start(): Promise<void> {
   /** Пути, которым в прошлом кадре ставили свечение: гасим только их. */
   let litPaths: number[] = [];
 
+  // Глубина пути в дереве: у корня 0. Один проход по возрастанию — родитель
+  // всегда меньше потомка, поэтому к моменту обработки пути его глубина уже
+  // посчитана. Дерево за сессию не меняется, так что считаем один раз.
+  const depth = new Uint32Array(pathCount);
+  for (let path = 1; path < pathCount; path++) depth[path] = depth[pack.pathParent[path]!]! + 1;
+
   const scene: SceneInput & { representative: Int32Array; files: Int32Array } = {
     active: new Uint8Array(pathCount),
     positions: new Float32Array(pathCount * 2),
@@ -101,6 +107,7 @@ async function start(): Promise<void> {
     alpha: new Float32Array(pathCount).fill(1),
     linkSource: new Uint32Array(0),
     linkTarget: new Uint32Array(0),
+    depth,
     flash,
     // Заполняется refreshHits() из projectHits; до первого поиска пусто —
     // кольцо обводки рисовать нечего.

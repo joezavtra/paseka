@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { Camera } from '../../web/render/camera.js';
-import { EDGE_COLOR, MIN_EDGE_WIDTH_PX } from '../../web/render/scene.js';
+import { EDGE_COLOR, MIN_EDGE_WIDTH_PX, edgeDepthAlpha } from '../../web/render/scene.js';
 import { SCENE_BACKGROUND } from '../../web/render/palette.js';
 import { drawScene, type SceneInput } from '../../web/render/scene.js';
 import { DIR_COLOR_INDEX, PALETTE } from '../../web/render/palette.js';
@@ -116,6 +116,9 @@ function sceneWithTwoNodes(): SceneInput {
     active: Uint8Array.from([1, 1]),
     positions: Float32Array.from([0, 0, 10, 10]),
     radius: Float32Array.from([3, 3]),
+    // Корень и его прямой потомок: ребро между ними — первого уровня, то есть
+    // рисуется в полную силу. Тесты на затухание задают глубину сами.
+    depth: Uint32Array.from([0, 1]),
     // Цвет — индекс в палитре, а не строка: его приходится умножать на альфу
     // гашения покадрово, и строки для этого негодны.
     color: Uint8Array.from([DIR_COLOR_INDEX, 3]),
@@ -236,14 +239,18 @@ describe('drawScene', () => {
   it('рисует все рёбра одной альфы одним контуром, а не по одному на ребро', () => {
     const { ctx, strokes } = stubContext();
     const input = sceneWithTwoNodes();
-    // Четыре узла в ряд, три ребра, все концы в полной альфе.
+    // Звезда, а не цепочка: три ребра от одного родителя лежат на одной
+    // глубине, значит и альфа у них одна — именно этот случай и должен
+    // сливаться в один контур. У цепочки глубины разные, и рёбра законно
+    // рисуются по отдельности (см. затухание с глубиной).
     input.active = Uint8Array.from([1, 1, 1, 1]);
     input.positions = Float32Array.from([0, 0, 10, 0, 20, 0, 30, 0]);
     input.radius = Float32Array.from([3, 3, 3, 3]);
     input.color = Uint8Array.from([DIR_COLOR_INDEX, DIR_COLOR_INDEX, DIR_COLOR_INDEX, DIR_COLOR_INDEX]);
     input.alpha = new Float32Array(4).fill(1);
     input.flash = new Float32Array(4);
-    input.linkSource = Uint32Array.from([0, 1, 2]);
+    input.depth = Uint32Array.from([0, 1, 1, 1]);
+    input.linkSource = Uint32Array.from([0, 0, 0]);
     input.linkTarget = Uint32Array.from([1, 2, 3]);
 
     drawScene(ctx, new Camera(), input, 800, 600);
@@ -595,5 +602,67 @@ describe('видимость рёбер', () => {
 
   it('ребро не тоньше пикселя даже на общем плане', () => {
     expect(MIN_EDGE_WIDTH_PX).toBeGreaterThanOrEqual(0.75);
+  });
+});
+
+describe('затухание рёбер с глубиной', () => {
+  it('ребро первого уровня рисуется в полную силу', () => {
+    expect(edgeDepthAlpha(1)).toBe(1);
+    // Глубина 0 у ребра невозможна (у корня нет родителя), но и она не должна
+    // давать больше единицы.
+    expect(edgeDepthAlpha(0)).toBe(1);
+  });
+
+  it('каждый следующий уровень тусклее предыдущего', () => {
+    expect(edgeDepthAlpha(2)).toBeLessThan(edgeDepthAlpha(1));
+    expect(edgeDepthAlpha(3)).toBeLessThan(edgeDepthAlpha(2));
+    expect(edgeDepthAlpha(4)).toBeLessThan(edgeDepthAlpha(3));
+  });
+
+  it('глубокая ветка не пропадает совсем', () => {
+    // Иначе на десятом уровне вложенности связь исчезла бы, а вместе с ней и
+    // понимание, к какой папке относится файл.
+    expect(edgeDepthAlpha(20)).toBeGreaterThan(0.2);
+    expect(edgeDepthAlpha(200)).toBe(edgeDepthAlpha(20));
+  });
+
+  it('негодная глубина не даёт негодной яркости', () => {
+    for (const bad of [NaN, Infinity, -Infinity, -5]) {
+      const value = edgeDepthAlpha(bad);
+      expect(Number.isFinite(value)).toBe(true);
+      expect(value).toBeGreaterThan(0);
+      expect(value).toBeLessThanOrEqual(1);
+    }
+  });
+
+  it('на сцене глубокое ребро рисуется тусклее мелкого', () => {
+    const { ctx, strokeAlpha } = stubContext();
+    const input = sceneWithTwoNodes();
+    input.linkSource = Uint32Array.from([0]);
+    input.linkTarget = Uint32Array.from([1]);
+    input.depth = Uint32Array.from([0, 1]);
+    drawScene(ctx, new Camera(), input, 800, 600);
+    const shallow = strokeAlpha[0]!;
+
+    const deepRun = stubContext();
+    const deepInput = sceneWithTwoNodes();
+    deepInput.linkSource = Uint32Array.from([0]);
+    deepInput.linkTarget = Uint32Array.from([1]);
+    deepInput.depth = Uint32Array.from([0, 6]);
+    drawScene(deepRun.ctx, new Camera(), deepInput, 800, 600);
+
+    expect(deepRun.strokeAlpha[0]!).toBeLessThan(shallow);
+  });
+
+  it('затухание по глубине множится на гашение фильтром, а не заменяет его', () => {
+    const { ctx, strokeAlpha } = stubContext();
+    const input = sceneWithTwoNodes();
+    input.linkSource = Uint32Array.from([0]);
+    input.linkTarget = Uint32Array.from([1]);
+    input.depth = Uint32Array.from([0, 3]);
+    input.alpha = Float32Array.from([1, 0.5]);
+    drawScene(ctx, new Camera(), input, 800, 600);
+
+    expect(strokeAlpha[0]!).toBeCloseTo(0.5 * edgeDepthAlpha(3), 2);
   });
 });

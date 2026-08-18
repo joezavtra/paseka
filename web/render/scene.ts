@@ -75,6 +75,12 @@ export interface SceneInput {
   alpha: Float32Array;
   linkSource: Uint32Array;
   linkTarget: Uint32Array;
+  /**
+   * Глубина пути в дереве: у корня 0, у его детей 1 и так далее. Индекс —
+   * идентификатор пути. Нужна отрисовке рёбер: чем глубже связь, тем тусклее
+   * она рисуется (см. edgeDepthAlpha).
+   */
+  depth: Uint32Array;
   /** Свечение узла от недавнего касания: 0 — нет, 1 — только что задет. */
   flash: Float32Array;
   /**
@@ -127,6 +133,30 @@ const EDGE_COLOR = '#586a84';
  * и без того малозаметную полоску.
  */
 const MIN_EDGE_WIDTH_PX = 0.9;
+/** Во сколько раз тускнеет ребро с каждым уровнем вложенности. */
+const EDGE_DEPTH_FALLOFF = 0.72;
+/** Ниже этой доли яркости ребро не опускается: глубокая ветка должна остаться видимой. */
+const EDGE_MIN_DEPTH_ALPHA = 0.28;
+
+/**
+ * Насколько ярко рисовать ребро на этой глубине.
+ *
+ * Ствол ярче веточек: рёбра от корня держат общую форму дерева, а рёбра внутри
+ * пакета из пяти вложенных папок повторяют то, что и так видно по расположению
+ * узлов. Без этого все связи кричат одинаково громко, и на большом дереве
+ * читается только сплошная сетка.
+ *
+ * Глубина считается по потомку, а не по родителю: у ребра «корень → src»
+ * потомок лежит на первом уровне, и такое ребро рисуется в полную силу.
+ * Затухание геометрическое, с полом — иначе на десятом уровне вложенности
+ * связь пропала бы совсем, а вместе с ней и понимание, к какой папке относится
+ * файл.
+ */
+export function edgeDepthAlpha(depth: number): number {
+  if (!Number.isFinite(depth)) return EDGE_MIN_DEPTH_ALPHA;
+  const level = Math.max(1, Math.floor(depth));
+  return Math.max(EDGE_MIN_DEPTH_ALPHA, Math.pow(EDGE_DEPTH_FALLOFF, level - 1));
+}
 
 /** Радиус узла с учётом свечения от недавнего касания. */
 export function flashRadius(radius: number, flash: number): number {
@@ -172,17 +202,21 @@ export function drawScene(
 
   ctx.strokeStyle = EDGE_COLOR;
   ctx.lineWidth = Math.max(MIN_EDGE_WIDTH_PX, camera.scale * 0.35);
-  // Рёбер могут быть десятки тысяч, а различных альф среди них — единицы (в
-  // основном погашено/не погашено, до четырёх во время перехода фильтра).
-  // Группируем по округлённой альфе и на группу тратим один beginPath() и
-  // один stroke(), а не по паре на каждое ребро.
+  // Рёбер могут быть десятки тысяч, а различных альф среди них — десятки:
+  // состояние фильтра (погашено, не погашено, промежуточные во время перехода)
+  // умножается на затухание по глубине, а глубин в реальном дереве — до
+  // полутора десятков, и дальше все упираются в пол. Группируем по округлённой
+  // альфе и на группу тратим один beginPath() и один stroke(), а не по паре на
+  // каждое ребро.
   const edgeGroups = new Map<number, number[]>();
   for (let i = 0; i < input.linkSource.length; i++) {
     const source = input.linkSource[i]!;
     const target = input.linkTarget[i]!;
     // Ребро не может быть ярче своих концов: иначе погашенная ветка осталась бы
-    // соединена яркими линиями и читалась бы как активная.
-    const edgeAlpha = Math.min(input.alpha[source]!, input.alpha[target]!);
+    // соединена яркими линиями и читалась бы как активная. Поверх этого —
+    // затухание с глубиной: ствол ярче веточек.
+    const edgeAlpha =
+      Math.min(input.alpha[source]!, input.alpha[target]!) * edgeDepthAlpha(input.depth[target]!);
     if (edgeAlpha <= 0) continue;
     const [ax, ay] = camera.toScreen(input.positions[source * 2]!, input.positions[source * 2 + 1]!);
     const [bx, by] = camera.toScreen(input.positions[target * 2]!, input.positions[target * 2 + 1]!);
