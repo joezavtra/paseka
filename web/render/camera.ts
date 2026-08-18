@@ -147,8 +147,18 @@ export class Camera {
     return this.fitActive(positions, active, width, height, left);
   }
 
-  /** Вешает колесо и перетаскивание. Возвращает функцию отписки. */
-  attach(canvas: HTMLCanvasElement): () => void {
+  /**
+   * Вешает колесо и перетаскивание. Возвращает функцию отписки.
+   *
+   * `onManualControl`, если дан, зовётся ровно в момент, когда пользователь
+   * действительно берёт камеру в свои руки этим жестом (не на каждое
+   * колесо/перемещение курсора вообще, а на тот же переход, что отключает
+   * автовписывание). Нужен вызывающему, у которого есть собственное
+   * состояние, зависящее от того, кто сейчас распоряжается камерой — поиск
+   * (срез 5) отменяет им отложенный фокус: жест пользователя перекрывает
+   * прежнее намерение.
+   */
+  attach(canvas: HTMLCanvasElement, onManualControl?: () => void): () => void {
     let dragging = false;
     let lastX = 0;
     let lastY = 0;
@@ -159,6 +169,7 @@ export class Camera {
       // автовписывание молчит, иначе оно вернуло бы масштаб на следующем же
       // сообщении раскладки.
       this.takeManualControl();
+      onManualControl?.();
       this.zoomAt(event.offsetX, event.offsetY, Math.exp(-event.deltaY * 0.002));
     };
     const onDown = (event: PointerEvent) => {
@@ -172,6 +183,7 @@ export class Camera {
       // Отмечаем именно перетаскивание, а не нажатие: одиночный клик по узлу
       // (инспектор в срезе 5) не должен отбирать камеру у автовписывания.
       this.takeManualControl();
+      onManualControl?.();
       this.panBy(event.offsetX - lastX, event.offsetY - lastY);
       lastX = event.offsetX;
       lastY = event.offsetY;

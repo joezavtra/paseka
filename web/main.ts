@@ -25,6 +25,7 @@ import {
 } from './state/visibility.js';
 import { computeAlpha, EMPTY_FILTER, type FilterSpec } from './state/filter.js';
 import { computeHits, projectHits } from './state/search.js';
+import { applyPositions as applyPlacedPositions, createPlacementTracker, recordEpoch } from './layout/placement.js';
 
 async function start(): Promise<void> {
   const canvas = document.getElementById('scene') as HTMLCanvasElement;
@@ -125,22 +126,40 @@ async function start(): Promise<void> {
    * только что родившегося пути, пока воркер не ответил. Сбрасывается в
    * applyDelta для рождающихся путей (кроме тех, кому досталась позиция
    * родителя — унаследованная позиция настоящая, а не заглушка), поднимается
-   * в обработчике сообщений воркера для всех рисуемых путей разом: ответ
-   * воркера означает, что NodeStore.applyUpdate завёл узел каждому из них
-   * структурно (см. web/layout/node-store.ts), а не только перечисленным во
-   * `added`.
+   * функцией `applyPositions` (см. web/layout/placement.ts) по ответу воркера
+   * — не по текущей маске главного потока, а по маске, отправленной вместе с
+   * той эпохой, которую воркер эхует: между отправкой `update` и его ответом
+   * воркер продолжает слать тики по старой эпохе, которая ещё не знает про
+   * путь, родившийся уже после отправки. Массив не переприсваивается —
+   * только элементы, поэтому `const`.
    */
-  let placed: Uint8Array = new Uint8Array(pathCount);
+  const placed: Uint8Array = new Uint8Array(pathCount);
+  /**
+   * Держит маски, отправленные вместе с ещё не устаревшими эпохами `update` —
+   * подробности в web/layout/placement.ts. Живёт в main.ts, а не в воркере:
+   * это главный поток спрашивает, была ли его собственная просьба выполнена,
+   * и ему решать, каким эпохам верить.
+   */
+  const placementTracker = createPlacementTracker();
+  /** Номер следующего `update`; воркер эхует его назад в каждом `positions` (см. web/layout/protocol.ts). */
+  let nextEpoch = 1;
   /**
    * Путь, для которого поиск попросил камеру, но позиции у него ещё не было:
    * пользователь нажал Enter — доля секунды ожидания честнее молчания.
    * Разрешается ближайшим сообщением воркера, которое поднимет `placed` для
-   * этого пути (см. ниже), либо новым поиском, который его заменит или снимет.
+   * этого пути (см. ниже), либо новым поиском или ручным вмешательством в
+   * камеру, которые его снимают — иначе отложенная цель выстрелила бы поверх
+   * уже изменившегося намерения пользователя.
    */
   let pendingFocus: number | null = null;
 
   const camera = new Camera();
-  camera.attach(canvas);
+  camera.attach(canvas, () => {
+    // Колесо или перетаскивание — пользователь взял камеру в свои руки прямо
+    // сейчас; отложенный фокус поиска, если он ждал своего часа, больше не
+    // должен выстрелить поверх этого решения на ближайшем сообщении воркера.
+    pendingFocus = null;
+  });
 
   const hud = document.getElementById('hud');
   const sidebarRoot = document.getElementById('sidebar');
@@ -233,6 +252,13 @@ async function start(): Promise<void> {
 
   /** Пересчитывает маску попаданий по новому образцу и проецирует её заново. */
   function applySearch(query: string): { first: number; count: number } {
+    // Образец меняется — прежнее намерение снимается вместе с ним: иначе
+    // «Enter → сразу очистить поле» или «Enter → напечатать другой образец»
+    // оставляли бы отложенную цель предыдущего поиска, и она выстрелила бы
+    // камерой на ближайшем сообщении воркера уже после того, как кольца для
+    // неё на сцене нет. onSearchSubmit ниже сам заводит новый pendingFocus,
+    // если он снова понадобится для нового результата.
+    pendingFocus = null;
     searchQuery = query;
     searchHits = computeHits(pack, searchQuery);
     if (searchQuery.trim().length === 0) {
@@ -282,14 +308,15 @@ async function start(): Promise<void> {
   const worker = new Worker(new URL('./layout/worker.ts', import.meta.url), { type: 'module' });
   worker.onmessage = (event: MessageEvent<FromWorker>) => {
     if (event.data.type !== 'positions') return;
-    scene.positions = event.data.positions;
-    // NodeStore.applyUpdate заводит узел структурно для каждого рисуемого
-    // пути, а не только для перечисленных в added (см.
-    // web/layout/node-store.ts) — этот ответ воркера гарантирует, что у
-    // любого активного пути теперь есть настоящая позиция, а не заглушка.
-    for (let path = 0; path < pathCount; path++) {
-      if (scene.active[path] === 1) placed[path] = 1;
-    }
+    // Переносит позиции и поднимает `placed` только для путей, которые были
+    // рисуемыми на момент эпохи, которую воркер сейчас эхует, — не для
+    // текущей scene.active главного потока, которая уже может быть новее
+    // (главный поток мог отправить следующий `update` с новорождённым путём
+    // раньше, чем пришёл ответ на этот). Мутирует scene.positions на месте,
+    // а не переприсваивает: путь, не попавший в маску этой эпохи, обязан
+    // остаться как был — даже если это унаследованная от родителя позиция,
+    // а не заглушка. Подробности — в web/layout/placement.ts.
+    applyPlacedPositions(placementTracker, event.data.epoch, event.data.positions, scene.positions, placed);
     // Поиск попросил камеру о пути, у которого ещё не было позиции, — теперь
     // она, возможно, появилась.
     if (pendingFocus !== null && attemptFocus(pendingFocus)) pendingFocus = null;
@@ -509,8 +536,10 @@ async function start(): Promise<void> {
     scene.linkSource = links.source;
     scene.linkTarget = links.target;
 
+    const epoch = nextEpoch++;
     const update: LayoutUpdate = {
       type: 'update',
+      epoch,
       active: scene.active.slice(),
       added: born,
       radiusIds: Uint32Array.from(radiusIds),
@@ -518,6 +547,10 @@ async function start(): Promise<void> {
       linkSource: links.source,
       linkTarget: links.target,
     };
+    // Запоминаем маску этой эпохи до отправки: postMessage без списка
+    // передачи клонирует буфер, а не отбирает его, так что update.active
+    // остаётся годным здесь же — вторая аллокация была бы лишней.
+    recordEpoch(placementTracker, epoch, update.active);
     worker.postMessage(update);
 
     // Лучи заводятся только на шаге воспроизведения. Перемотка не двигает
@@ -614,13 +647,12 @@ async function start(): Promise<void> {
       },
       onSearch: (query) => applySearch(query),
       onSearchSubmit: (query) => {
+        // applySearch уже снял прежний pendingFocus (образец сменился, пусть
+        // и на тот же самый) — если результата нет, снимать больше нечего.
         const { first } = applySearch(query);
         // Нуль совпадений — камеру не трогаем вовсе: дёргать вид ради пустого
         // результата было бы хуже, чем оставить его как есть.
-        if (first < 0) {
-          pendingFocus = null;
-          return;
-        }
+        if (first < 0) return;
         // attemptFocus сам решает: едет камера сразу, или узел ещё не получил
         // позицию от раскладки — тогда решение откладывается до ближайшего
         // сообщения воркера (см. worker.onmessage выше).
