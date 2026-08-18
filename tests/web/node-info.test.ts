@@ -166,3 +166,80 @@ describe('describeNode', () => {
     expect(info('', 2).name).toBe('demo');
   });
 });
+
+/**
+ * Отдельный пакет на воскрешение: файл создан, удалён, создан заново.
+ * Реализация опирается на ранний выход из цикла событий пути (`break` при
+ * `commit > cursor`), законный только потому, что события пути идут по
+ * возрастанию коммита (buildPathHistory). Если выход сломать или заменить
+ * чем-то «более полным», события из будущего просочатся в прошлое — и этот
+ * тест это поймает: на курсоре между смертью и воскрешением утечка сразу
+ * увеличит commits и lastCommit.
+ */
+const resurrectionPack = buildPack(
+  [
+    {
+      hash: 'r0',
+      authorName: 'Аня',
+      authorEmail: 'anya@e.com',
+      timestamp: 1000,
+      subject: 'рождение',
+      changes: [add('src/r.ts', 5)],
+    },
+    {
+      hash: 'r1',
+      authorName: 'Бо',
+      authorEmail: 'bo@e.com',
+      timestamp: 2000,
+      subject: 'смерть',
+      changes: [remove('src/r.ts')],
+    },
+    {
+      hash: 'r2',
+      authorName: 'Аня',
+      authorEmail: 'anya@e.com',
+      timestamp: 3000,
+      subject: 'воскрешение',
+      changes: [add('src/r.ts', 8)],
+    },
+  ],
+  { repoName: 'resurrection', head: 'r2' },
+);
+
+const resurrectionId = (path: string): number => {
+  const index = resurrectionPack.paths.indexOf(path);
+  if (index < 0) throw new Error(`нет пути ${path}`);
+  return index;
+};
+
+const resurrectionInfo = (path: string, cursor: number, options = {}) => {
+  const engine = new TimeEngine(resurrectionPack);
+  engine.seek(cursor);
+  return describeNode(
+    resurrectionPack,
+    resurrectionId(path),
+    cursor,
+    engine.alive,
+    engine.sizes,
+    options,
+  );
+};
+
+describe('describeNode: воскрешённый путь', () => {
+  it('после воскрешения хранит рождение первым, а не последним', () => {
+    const revived = resurrectionInfo('src/r.ts', 2);
+    expect(revived.alive).toBe(true);
+    expect(revived.lines).toBe(8);
+    expect(revived.birthCommit).toBe(0); // первое рождение (r0), не воскрешение
+    expect(revived.lastCommit).toBe(2); // коммит воскрешения (r2)
+    expect(revived.commits).toBe(3); // r0, r1 и r2 — все три задели путь
+  });
+
+  it('между смертью и воскрешением мёртв, но история на месте', () => {
+    const between = resurrectionInfo('src/r.ts', 1);
+    expect(between.alive).toBe(false);
+    expect(between.lines).toBe(0);
+    expect(between.birthCommit).toBe(0);
+    expect(between.commits).toBe(2); // r0 и r1, r2 из будущего не виден
+  });
+});
