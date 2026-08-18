@@ -143,6 +143,21 @@ describe('NodeStore', () => {
     expect(positions[2] !== 0 || positions[3] !== 0).toBe(true);
   });
 
+  it('заводит узел активному пути, которого не было в списке добавленных', () => {
+    // С маской видимости путь может войти в active, не появившись в added
+    // (например, схлопнутая папка стала видимой) — хранилище обязано родить
+    // узел само, а не молчаливо потерять его. Проверяем через возвращённый
+    // список узлов, а не через positions(): нерождённый узел там читался бы
+    // нулевой позицией, которая ничем не отличима от настоящей.
+    const store = new NodeStore(3, Uint32Array.from([0, 0, 1]), 1);
+    const nodes = store.applyUpdate(update({ active: Uint8Array.from([1, 1, 1]) }));
+
+    expect(nodes.map((node) => node.id).sort()).toEqual([0, 1, 2]);
+    const positions = store.positions();
+    expect(Number.isFinite(positions[4])).toBe(true);
+    expect(Number.isFinite(positions[5])).toBe(true);
+  });
+
   it('позиции имеют длину pathCount * 2, а мёртвые пути дают нули', () => {
     const parent = Uint32Array.from([0, 0, 0]);
     const store = new NodeStore(3, parent, 2);

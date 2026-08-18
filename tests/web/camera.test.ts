@@ -129,3 +129,58 @@ describe('Camera.autoFit', () => {
     expect(camera.autoFit(Float32Array.from([1, 1]), Uint8Array.from([0]), 800, 600)).toBe(false);
   });
 });
+
+describe('Camera — свободная полоса слева под боковую панель', () => {
+  // Панель лежит поверх холста и почти непрозрачна: вписывать дерево во всю
+  // ширину окна значит спрятать его левый край под панелью. Полоса под HUD
+  // вычитается из высоты точно так же, но снизу вычитания хватает — начало
+  // отсчёта сверху; слева же нужно ещё и сдвинуть картинку.
+  it('fit сдвигает облако правее зарезервированной полосы', () => {
+    const camera = new Camera();
+    const left = 280;
+    camera.fit(Float32Array.from([-100, -100, 100, 100]), 1280 - left, 800, left);
+
+    const [ax] = camera.toScreen(-100, -100);
+    const [bx] = camera.toScreen(100, 100);
+    expect(ax).toBeGreaterThan(left);
+    expect(bx).toBeLessThan(1280);
+  });
+
+  it('fitActive передаёт смещение дальше в fit', () => {
+    const camera = new Camera();
+    const left = 300;
+    camera.fitActive(
+      Float32Array.from([-10, -10, 10, 10, 100000, 100000]),
+      Uint8Array.from([1, 1, 0]),
+      1000 - left,
+      600,
+      left,
+    );
+
+    const [ax] = camera.toScreen(-10, -10);
+    expect(ax).toBeGreaterThan(left);
+  });
+
+  it('autoFit передаёт смещение дальше в fitActive', () => {
+    const camera = new Camera();
+    const left = 260;
+    camera.autoFit(
+      Float32Array.from([-5, -5, 5, 5]),
+      Uint8Array.from([1, 1]),
+      900 - left,
+      600,
+      left,
+    );
+
+    const [ax] = camera.toScreen(-5, -5);
+    expect(ax).toBeGreaterThan(left);
+  });
+
+  it('без смещения вписывает по-прежнему от левого края', () => {
+    const camera = new Camera();
+    camera.fit(Float32Array.from([-100, -100, 100, 100]), 800, 600);
+    const [ax] = camera.toScreen(-100, -100);
+    expect(ax).toBeGreaterThan(0);
+    expect(ax).toBeLessThan(200);
+  });
+});

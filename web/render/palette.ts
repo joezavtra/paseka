@@ -1,4 +1,5 @@
 import { hashString } from '../../src/util/hash.js';
+import { extensionOf } from '../state/filter.js';
 
 /**
  * Единственное место, где живут строки цветов сцены. Раньше цвет каталога был
@@ -21,12 +22,17 @@ export const DIR_COLOR_INDEX = 0;
 /** С какого индекса начинаются цвета файлов: нулевой занят каталогами. */
 const FILE_COLOR_START = 1;
 
-/** Устойчивый цвет по расширению файла: одно расширение — один цвет палитры. */
+/**
+ * Устойчивый цвет по расширению файла: одно расширение — один цвет палитры.
+ *
+ * «Какое у пути расширение» определяется ровно в одном месте — в фильтре
+ * (`state/filter`), откуда правило и берётся. Своя копия здесь уже была, и,
+ * пока определения совпадали дословно, это ничего не стоило; научи завтра одно
+ * из них составным расширениям — и чип фильтра работал бы по одному правилу, а
+ * цвет узла по другому.
+ */
 export function paletteIndexForPath(path: string): number {
-  const slash = path.lastIndexOf('/');
-  const name = slash === -1 ? path : path.slice(slash + 1);
-  const dot = name.lastIndexOf('.');
-  const ext = dot <= 0 ? '' : name.slice(dot + 1).toLowerCase();
+  const ext = extensionOf(path);
   if (ext === '') return DIR_COLOR_INDEX;
   return FILE_COLOR_START + (hashString(ext) % (PALETTE.length - FILE_COLOR_START));
 }

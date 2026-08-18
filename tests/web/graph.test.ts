@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildActiveLinks, radiusFor } from '../../web/layout/graph.js';
+import { buildActiveLinks, diffBorn, radiusFor } from '../../web/layout/graph.js';
 
 describe('buildActiveLinks', () => {
   it('строит рёбра родитель → потомок в идентификаторах путей', () => {
@@ -40,11 +40,58 @@ describe('radiusFor', () => {
     expect(radiusFor(1_000_000, false)).toBeLessThanOrEqual(40);
   });
 
-  it('делает директории мелкими и одинаковыми', () => {
-    expect(radiusFor(0, true)).toBe(radiusFor(9999, true));
+  it('обычная директория без размера остаётся мелкой', () => {
+    expect(radiusFor(0, true)).toBeCloseTo(3, 1);
+  });
+
+  it('свёрнутая директория растёт от размера, как и файл, но от своей базы', () => {
+    const empty = radiusFor(0, true);
+    const big = radiusFor(10_000, true);
+    // Заметно крупнее пустой директории, но не крупнее общего потолка.
+    expect(big).toBeGreaterThan(empty * 3);
+    expect(big).toBeLessThanOrEqual(40);
   });
 
   it('клэмпит отрицательное число строк', () => {
     expect(radiusFor(-50, false)).toBeCloseTo(2.5, 1);
+  });
+});
+
+describe('diffBorn', () => {
+  it('считает рождённым путь, ставший рисуемым', () => {
+    const prevDrawn = new Uint8Array(3);
+    const born = diffBorn(prevDrawn, Uint8Array.from([1, 0, 1]));
+    expect([...born]).toEqual([0, 2]);
+  });
+
+  it('не считает рождённым путь, который уже был рисуемым', () => {
+    const prevDrawn = Uint8Array.from([1, 0, 1]);
+    const born = diffBorn(prevDrawn, Uint8Array.from([1, 1, 1]));
+    expect([...born]).toEqual([1]);
+  });
+
+  it('чистая функция: не трогает ни prevDrawn, ни drawn', () => {
+    const prevDrawn = Uint8Array.from([0, 0]);
+    const drawn = Uint8Array.from([1, 1]);
+    diffBorn(prevDrawn, drawn);
+    expect([...prevDrawn]).toEqual([0, 0]);
+    expect([...drawn]).toEqual([1, 1]);
+  });
+
+  it('путь, появившийся и исчезнувший между применениями, не остаётся забытым', () => {
+    // Функция чистая, поэтому prevDrawn переносим сами между вызовами — ровно
+    // так, как это делает main.ts.
+    let prevDrawn = Uint8Array.from([0, 0]);
+
+    let drawn = Uint8Array.from([1, 0]); // путь 0 появился
+    expect([...diffBorn(prevDrawn, drawn)]).toEqual([0]);
+    prevDrawn = drawn;
+
+    drawn = Uint8Array.from([0, 0]); // путь 0 исчез, ничего нового не родилось
+    expect([...diffBorn(prevDrawn, drawn)]).toEqual([]);
+    prevDrawn = drawn;
+
+    drawn = Uint8Array.from([1, 0]); // путь 0 появился снова
+    expect([...diffBorn(prevDrawn, drawn)]).toEqual([0]);
   });
 });

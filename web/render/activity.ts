@@ -1,5 +1,6 @@
 import type { ActorTarget } from './actors.js';
 import type { RecentEvents } from '../time/recent.js';
+import { HIDDEN } from '../state/visibility.js';
 
 /** Свечение узла: путь и сила, с которой он подсвечен в этом кадре. */
 export interface ActivityFlash {
@@ -9,8 +10,8 @@ export interface ActivityFlash {
 
 /**
  * Луч в мировых координатах. Конец разрешён здесь же, где событие прошло
- * проверку на видимость: в срезе 5 у свёрнутой папки концом станет её
- * представитель, и подменить это придётся ровно в одном месте.
+ * проверку на видимость: у свёрнутой папки концом становится её
+ * представитель — это единственное место, где решается, куда он бьёт.
  * Начало ставит точка входа — после того как поле авторов сделало свой шаг.
  */
 export interface ActivityBeam {
@@ -18,6 +19,14 @@ export interface ActivityBeam {
   toX: number;
   toY: number;
   strength: number;
+  /**
+   * Яркость фильтра у конца луча. Считается здесь же, где разрешается сам
+   * конец, и по тому же представителю: правило «куда бьёт луч и насколько он
+   * ярок» обязано жить в одном месте. Иначе фильтр по авторам гасил бы заливку
+   * и вспышку, а лучи — самый заметный слой воспроизведения — продолжали бы
+   * бить в полную яркость по едва видимым узлам.
+   */
+  alpha: number;
 }
 
 export interface ActivityFrame {
@@ -28,10 +37,15 @@ export interface ActivityFrame {
   targets: ActorTarget[];
 }
 
-/** Состояние сцены, из которого выводится кадр: маска живых и позиции узлов. */
+/** Состояние сцены, из которого выводится кадр: рисуемая маска и позиции узлов. */
 export interface ActivityScene {
+  /** Рисуемая маска; индекс — идентификатор пути. Не путать с живостью: скрытый или свёрнутый живой путь сюда не входит. */
   active: Uint8Array;
   positions: Float32Array;
+  /** Кто представляет путь на экране; HIDDEN, если путь не показывается. */
+  representative: Int32Array;
+  /** Яркость узла от фильтра; индекс — идентификатор пути. */
+  alpha: Float32Array;
 }
 
 interface Centroid {
@@ -44,12 +58,13 @@ interface Centroid {
  * Выводит из буфера событий всё, что рисуется поверх дерева: свечение узлов,
  * лучи и цели авторов.
  *
- * Единственное место, где решается, видно ли событие: путь обязан быть жив.
- * Мёртвый путь не даёт ни вспышки, ни луча, ни вклада в центроид — поэтому и
- * число авторов в строке состояния равно targets.length и не может разойтись
- * с картинкой. Отдельный подсчёт авторов по буферу был бы именно таким
- * расхождением: коммит, который только удаляет файлы, в буфере есть, а на
- * экране его нет.
+ * Единственное место, где решается, видно ли событие: путь разрешается через
+ * представителя (сам себя, свёрнутый предок либо HIDDEN), и представитель
+ * обязан быть жив. Ни у скрытого пути, ни у мёртвого представителя нет ни
+ * вспышки, ни луча, ни вклада в центроид — поэтому и число авторов в строке
+ * состояния равно targets.length и не может разойтись с картинкой. Отдельный
+ * подсчёт авторов по буферу был бы именно таким расхождением: коммит, который
+ * только удаляет файлы, в буфере есть, а на экране его нет.
  *
  * Функция чистая: буфер и сцену только читает, а результат каждый кадр
  * собирает заново. Объём этой сборки ограничен числом живых событий (потолок
@@ -70,14 +85,18 @@ export function deriveActivity(
   const centroids = new Map<number, Centroid>();
 
   recent.forEach(nowMs, (path, author, strength) => {
-    if (scene.active[path] !== 1) return;
-    const x = scene.positions[path * 2]!;
-    const y = scene.positions[path * 2 + 1]!;
+    // Единственное место, где решается, в какой узел бьёт луч. Свёрнутая папка
+    // жива и рисуется, а её содержимое — нет: событие внутри неё должно
+    // попадать в саму папку, иначе луч уходил бы в невидимый узел.
+    const target = scene.representative[path];
+    if (target === HIDDEN || scene.active[target] !== 1) return;
+    const x = scene.positions[target * 2]!;
+    const y = scene.positions[target * 2 + 1]!;
 
-    const at = flashAt.get(path);
+    const at = flashAt.get(target);
     if (at === undefined) {
-      flashAt.set(path, flashes.length);
-      flashes.push({ path, strength });
+      flashAt.set(target, flashes.length);
+      flashes.push({ path: target, strength });
     } else if (flashes[at]!.strength < strength) {
       flashes[at]!.strength = strength;
     }
@@ -90,7 +109,9 @@ export function deriveActivity(
       centroid.hits++;
     }
 
-    if (beams.length < beamLimit) beams.push({ author, toX: x, toY: y, strength });
+    if (beams.length < beamLimit) {
+      beams.push({ author, toX: x, toY: y, strength, alpha: scene.alpha[target]! });
+    }
   });
 
   // Порядок целей — по возрастанию идентификатора автора, а не по порядку

@@ -47,10 +47,25 @@
       #track input { position: absolute; inset: 0; width: 100%; margin: 0; }
       #cursor-label { flex: 0 1 auto; min-width: 0; color: #8b949e;
         white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      #sidebar { position: fixed; left: 12px; top: 12px; width: 260px; max-height: 70vh;
+        overflow: auto; padding: 10px 12px; background: #161b22e6;
+        border: 1px solid #30363d; border-radius: 8px; }
+      #sidebar[hidden] { display: none; }
+      #sidebar h2 { margin: 0 0 6px; font-size: 12px; color: #8b949e; font-weight: 600; }
+      #sidebar section + section { margin-top: 12px; }
+      #sidebar label { display: flex; align-items: center; gap: 6px; padding: 1px 0; }
+      #sidebar input[type="text"] { width: 100%; box-sizing: border-box; padding: 4px 6px;
+        background: #0d1117; color: #c9d1d9; border: 1px solid #30363d; border-radius: 5px;
+        font: inherit; }
+      .tree-row { display: flex; align-items: center; gap: 4px; }
+      .tree-row button { width: 18px; padding: 0; background: none; border: none;
+        color: #8b949e; cursor: pointer; font: inherit; }
+      .tree-children { margin-left: 14px; }
     </style>
   </head>
   <body>
     <canvas id="scene"></canvas>
+    <aside id="sidebar" hidden></aside>
     <div id="hud">
       <div id="status">Читаю историю репозитория…</div>
       <div id="transport" hidden></div>
