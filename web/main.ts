@@ -9,7 +9,7 @@ import { deriveActivity } from './render/activity.js';
 import { NOTHING, pickNode } from './render/pick.js';
 import { Playback } from './time/playback.js';
 import { formatCommitLabel, mountTransport } from './ui/transport.js';
-import { mountSidebar } from './ui/sidebar.js';
+import { mountSidebar, type SidebarHandles } from './ui/sidebar.js';
 import { mountInspector } from './ui/inspector.js';
 import { describeNode } from './state/node-info.js';
 import type { Pack } from '../src/model/types.js';
@@ -24,6 +24,7 @@ import {
   type VisibilitySpec,
 } from './state/visibility.js';
 import { computeAlpha, EMPTY_FILTER, type FilterSpec } from './state/filter.js';
+import { computeHits, projectHits } from './state/search.js';
 
 async function start(): Promise<void> {
   const canvas = document.getElementById('scene') as HTMLCanvasElement;
@@ -86,6 +87,9 @@ async function start(): Promise<void> {
     linkSource: new Uint32Array(0),
     linkTarget: new Uint32Array(0),
     flash,
+    // Заполняется refreshHits() из projectHits; до первого поиска пусто —
+    // кольцо обводки рисовать нечего.
+    hit: new Uint8Array(pathCount),
     beams,
     actors,
     // Кто представляет путь на экране; заполняется в applyDelta из
@@ -110,12 +114,18 @@ async function start(): Promise<void> {
   /** Рисуемая маска прошлого применения: из её разницы берётся список рождающихся. */
   const prevDrawn = new Uint8Array(pathCount);
 
+  let searchQuery = '';
+  /** Маска по исходным путям; пересчитывается только при смене образца, а не на каждый кадр. */
+  let searchHits: Uint8Array = new Uint8Array(pathCount);
+
   const camera = new Camera();
   camera.attach(canvas);
 
   const hud = document.getElementById('hud');
   const sidebarRoot = document.getElementById('sidebar');
   const inspectorRoot = document.getElementById('inspector');
+  /** Ручки панели фильтров; звать setSearchCount снаружи было бы нечем без них. */
+  let sidebar: SidebarHandles | null = null;
 
   /**
    * Вписывает живые узлы, пока камерой не завладел пользователь. Все полосы,
@@ -153,14 +163,49 @@ async function start(): Promise<void> {
     return canvas.clientWidth - box.left + 12;
   };
 
-  const followLayout = (): void => {
+  /**
+   * Прямоугольник, отведённый дереву на холсте: столько же полос занято, как
+   * и в followLayout, потому что правило «сколько занято панелями» должно
+   * жить в одном месте. Фокус камеры по Enter в поиске использует ту же
+   * геометрию — иначе рано или поздно она посчиталась бы дважды и разошлась
+   * (например, если карточку узла подвинут, а один из двух расчётов забудут
+   * поправить).
+   */
+  const viewBox = (): { left: number; width: number; height: number } => {
     const reservedBottom = hud ? hud.offsetHeight + 12 : 0;
     const left = reservedLeft();
     const right = reservedRight();
     const width = Math.max(1, canvas.clientWidth - left - right);
     const height = Math.max(1, canvas.clientHeight - reservedBottom);
+    return { left, width, height };
+  };
+
+  const followLayout = (): void => {
+    const { left, width, height } = viewBox();
     camera.autoFit(scene.positions, scene.active, width, height, left);
   };
+
+  /**
+   * Проецирует уже посчитанную маску попаданий (`searchHits`) на то, что
+   * сейчас нарисовано, и раздаёт результат: сцене — маску для обводки, панели
+   * — счётчик. Не пересчитывает саму маску по образцу — этим занимается
+   * `applySearch`; здесь только перенос на представителей, который нужен
+   * заново при каждой смене видимости или курсора, даже если образец не
+   * менялся (applyDelta зовёт именно этот, более дешёвый путь).
+   */
+  function refreshHits(): { first: number; count: number } {
+    const projected = projectHits(searchHits, scene.representative, scene.active);
+    scene.hit = projected.drawnHits;
+    sidebar?.setSearchCount(projected.count, searchQuery);
+    return { first: projected.first, count: projected.count };
+  }
+
+  /** Пересчитывает маску попаданий по новому образцу и проецирует её заново. */
+  function applySearch(query: string): { first: number; count: number } {
+    searchQuery = query;
+    searchHits = computeHits(pack, searchQuery);
+    return refreshHits();
+  }
 
   const worker = new Worker(new URL('./layout/worker.ts', import.meta.url), { type: 'module' });
   worker.onmessage = (event: MessageEvent<FromWorker>) => {
@@ -299,6 +344,10 @@ async function start(): Promise<void> {
     const visibility = resolveVisibility(pack, engine.alive, engine.sizes, visibilitySpec);
     scene.active.set(visibility.drawn);
     scene.representative = visibility.representative;
+    // Представители меняются вместе с видимостью и курсором — обводка и
+    // счётчик совпадений обязаны переехать на новых представителей, даже
+    // если сам образец поиска не менялся.
+    refreshHits();
 
     if (rewound) {
       // Перемотка обязана погасить чужую активность: без этого буфер держал
@@ -463,13 +512,22 @@ async function start(): Promise<void> {
 
   if (sidebarRoot) {
     visibilitySpec = loadVisibility();
-    mountSidebar(sidebarRoot, {
+    sidebar = mountSidebar(sidebarRoot, {
       pack,
       initialVisibility: visibilitySpec,
       onFilter: (spec) => applyFilter(spec, performance.now()),
       onVisibility: (spec) => {
         saveVisibility(spec);
         applyVisibility(spec);
+      },
+      onSearch: (query) => applySearch(query),
+      onSearchSubmit: (query) => {
+        const { first } = applySearch(query);
+        // Нуль совпадений — камеру не трогаем вовсе: дёргать вид ради пустого
+        // результата было бы хуже, чем оставить его как есть.
+        if (first < 0) return;
+        const { left, width, height } = viewBox();
+        camera.focusOn(scene.positions[first * 2]!, scene.positions[first * 2 + 1]!, width, height, left);
       },
     });
   }

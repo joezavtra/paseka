@@ -1,6 +1,7 @@
 import type { Pack } from '../../src/model/types.js';
 import { extensionOf, type FilterSpec } from '../state/filter.js';
 import type { VisibilitySpec } from '../state/visibility.js';
+import { ownsTextInput } from './keys.js';
 
 export interface SidebarOptions {
   pack: Pack;
@@ -8,6 +9,17 @@ export interface SidebarOptions {
   initialVisibility?: VisibilitySpec;
   onFilter(spec: FilterSpec): void;
   onVisibility(spec: VisibilitySpec): void;
+  /**
+   * Образец поиска меняется на каждое нажатие: обводка на сцене дешёвая и
+   * должна обновляться сразу, иначе поле выглядело бы нерабочим.
+   */
+  onSearch?(query: string): void;
+  /**
+   * Образец поиска подтверждён нажатием Enter: только теперь имеет смысл
+   * двигать камеру — на каждую букву это было бы потерей контекста для
+   * пользователя, который ещё дописывает образец.
+   */
+  onSearchSubmit?(query: string): void;
 }
 
 export interface SidebarHandles {
@@ -20,6 +32,15 @@ export interface SidebarHandles {
    * состояние пришло снаружи, и возврат его наружу замкнул бы петлю.
    */
   setVisibility(spec: VisibilitySpec): void;
+  /**
+   * Пишет строку счётчика совпадений под полем поиска. Держатель числа
+   * совпадений и текста образца остаётся снаружи (в main.ts, вместе с
+   * проекцией попаданий на представителей) — панель только показывает то,
+   * что ей передали.
+   */
+  setSearchCount(count: number, query: string): void;
+  /** Переносит клавиатурный фокус в поле поиска — цель горячей клавиши `/`. */
+  focusSearch(): void;
 }
 
 /**
@@ -105,6 +126,37 @@ export function mountSidebar(root: HTMLElement, options: SidebarOptions): Sideba
     box.append(heading);
     return box;
   }
+
+  const searchBox = section('Поиск');
+  const searchHeading = searchBox.querySelector('h2')!;
+  searchHeading.id = `sidebar-search-heading-${instanceId}`;
+  const searchField = document.createElement('input');
+  searchField.type = 'text';
+  searchField.dataset.role = 'search';
+  searchField.placeholder = 'имя или образец';
+  searchField.setAttribute('aria-labelledby', searchHeading.id);
+  searchField.addEventListener('input', () => {
+    options.onSearch?.(searchField.value);
+  });
+  searchField.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter') return;
+    options.onSearchSubmit?.(searchField.value);
+  });
+  const searchCount = document.createElement('div');
+  searchCount.dataset.role = 'search-count';
+  searchBox.append(searchField, searchCount);
+
+  // Клавиша `/` — стандартный жест «перейти к поиску»; ownsTextInput решает
+  // тот же вопрос, что и у пробела в транспорте и у Escape в карточке узла:
+  // не отбирать клавишу у поля, которое и так умеет её принять.
+  const handleSlash = (event: KeyboardEvent): void => {
+    if (event.key !== '/') return;
+    if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return;
+    if (ownsTextInput(event.target)) return;
+    event.preventDefault();
+    searchField.focus();
+  };
+  document.addEventListener('keydown', handleSlash);
 
   const authorsBox = section('Авторы');
   pack.authors.forEach((author, index) => {
@@ -281,7 +333,7 @@ export function mountSidebar(root: HTMLElement, options: SidebarOptions): Sideba
   }
 
   refreshTree();
-  root.append(authorsBox, pathBox, extBox, treeBox);
+  root.append(searchBox, authorsBox, pathBox, extBox, treeBox);
 
   return {
     setVisibility(spec: VisibilitySpec): void {
@@ -294,10 +346,25 @@ export function mountSidebar(root: HTMLElement, options: SidebarOptions): Sideba
       refreshTree();
     },
 
+    setSearchCount(count: number, query: string): void {
+      if (query.trim().length === 0) {
+        searchCount.textContent = '';
+      } else if (count > 0) {
+        searchCount.textContent = `совпадений: ${count} · Enter — показать первое`;
+      } else {
+        searchCount.textContent = 'ничего не найдено';
+      }
+    },
+
+    focusSearch(): void {
+      searchField.focus();
+    },
+
     unmount(): void {
-      // Все обработчики висят на элементах внутри корня, поэтому очистка
-      // содержимого снимает их вместе с узлами; отдельных слушателей на окне
-      // или документе панель не заводит.
+      // Обработчики на элементах внутри корня снимаются вместе с очисткой
+      // содержимого; глобальный слушатель `/` висит на документе и его нужно
+      // снять отдельно.
+      document.removeEventListener('keydown', handleSlash);
       root.replaceChildren();
       root.hidden = true;
     },

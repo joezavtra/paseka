@@ -52,6 +52,12 @@ export interface SceneInput {
   linkTarget: Uint32Array;
   /** Свечение узла от недавнего касания: 0 — нет, 1 — только что задет. */
   flash: Float32Array;
+  /**
+   * Найденное поиском; индекс — идентификатор пути. Отдельная ось от alpha:
+   * фильтр гасит непопавшее, поиск обводит попавшее, и одно не отменяет
+   * другого.
+   */
+  hit: Uint8Array;
   beams: BeamLayer;
   actors: ActorLayer;
 }
@@ -166,6 +172,25 @@ export function drawScene(
     }
     ctx.globalAlpha = 1;
   }
+
+  // Кольцо рисуется своей яркостью, а не яркостью узла: это единственный слой,
+  // который сознательно не умножается на альфу фильтра. Найденный файл в
+  // погашенной ветке обязан остаться погашенным — фильтр поиском не
+  // отменяется, — но если погасить и кольцо, поиск по отфильтрованному дереву
+  // не найдёт ничего видимого.
+  ctx.globalAlpha = 0.9;
+  ctx.strokeStyle = '#f0f6fc';
+  ctx.lineWidth = 2;
+  for (let path = 0; path < input.active.length; path++) {
+    if (input.active[path] === 0 || input.hit[path] !== 1) continue;
+    const [sx, sy] = camera.toScreen(input.positions[path * 2]!, input.positions[path * 2 + 1]!);
+    const r = flashRadius(input.radius[path]!, input.flash[path]!) * camera.scale + 3;
+    if (sx + r < 0 || sy + r < 0 || sx - r > width || sy - r > height) continue;
+    ctx.beginPath();
+    ctx.arc(sx, sy, Math.max(2, r), 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
 
   ctx.lineWidth = 1.4;
   for (let i = 0; i < input.beams.count; i++) {

@@ -114,6 +114,7 @@ function sceneWithTwoNodes(): SceneInput {
     linkSource: Uint32Array.from([0]),
     linkTarget: Uint32Array.from([1]),
     flash: new Float32Array(2),
+    hit: new Uint8Array(2),
     beams: {
       count: 0,
       fromX: new Float32Array(2),
@@ -274,6 +275,42 @@ describe('drawScene', () => {
     // strokeAlpha[0] — рёбра дерева; дальше два луча.
     expect(strokeAlpha[2]!).toBeLessThan(strokeAlpha[1]!);
     expect(strokeAlpha[2]!).toBeCloseTo(strokeAlpha[1]! * 0.12, 5);
+  });
+
+  it('обводит только узлы с hit === 1', () => {
+    const { ctx, strokes } = stubContext();
+    const input = sceneWithTwoNodes();
+    input.hit[0] = 1;
+
+    drawScene(ctx, new Camera(), input, 800, 600);
+
+    // Первый stroke — ребро дерева, второй — кольцо обводки узла 0.
+    expect(strokes).toEqual(['#2a3140', '#f0f6fc']);
+  });
+
+  it('не обводит узел, не рисуемый на сцене', () => {
+    const { ctx, strokes } = stubContext();
+    const input = sceneWithTwoNodes();
+    input.hit[0] = 1;
+    input.active[0] = 0;
+
+    drawScene(ctx, new Camera(), input, 800, 600);
+
+    expect(strokes).not.toContain('#f0f6fc');
+  });
+
+  it('яркость кольца не падает вместе с альфой узла', () => {
+    const { ctx, strokes, strokeAlpha } = stubContext();
+    const input = sceneWithTwoNodes();
+    input.hit[0] = 1;
+    input.alpha[0] = 0.05; // узел почти погашен фильтром
+
+    drawScene(ctx, new Camera(), input, 800, 600);
+
+    const ringIndex = strokes.indexOf('#f0f6fc');
+    expect(ringIndex).toBeGreaterThan(-1);
+    // Кольцо рисуется своей постоянной яркостью, а не яркостью погашенного узла.
+    expect(strokeAlpha[ringIndex]!).toBeCloseTo(0.9, 5);
   });
 
   it('рисует значок автора: кружок его цветом, инициалы и имя рядом', () => {
