@@ -2,10 +2,11 @@ import { test, expect, type Page } from '@playwright/test';
 import { startCli, type RunningCli } from '../helpers/cli.js';
 import { makeRepo, cleanupRepos } from '../helpers/tmp-repo.js';
 
-let cli: RunningCli | null = null;
+/** Каждый тест поднимает свой CLI; останавливаем все разом в конце файла. */
+const started: RunningCli[] = [];
 
 test.afterAll(async () => {
-  cli?.stop();
+  for (const cli of started) cli.stop();
   await cleanupRepos();
 });
 
@@ -33,7 +34,8 @@ test('строка состояния не перекрывает панель �
     { message: 'второй', write: { 'src/deep/b.ts': 'x\n', 'docs/c.md': 'y\n' } },
   ]);
 
-  cli = await startCli(repo);
+  const cli = await startCli(repo);
+  started.push(cli);
 
   await page.goto(cli.url);
   await page.waitForSelector('canvas[data-ready="true"]');
@@ -76,4 +78,69 @@ test('строка состояния не перекрывает панель �
   });
   expect(covered.button).toBe(false);
   expect(covered.speed).toBe(false);
+});
+
+/**
+ * Ширина дорожки перемотки обязана зависеть только от ширины окна.
+ *
+ * Пока подпись под курсором стояла с дорожкой в одной строке, дорожка отдавала
+ * ей ширину по длине темы коммита: тема в два слова — дорожка длинная, тема из
+ * пул-реквеста на полстроки — короткая. На каждом шаге воспроизведения дорожка
+ * меняла длину, и прицелиться в нужное место истории было невозможно — пока
+ * рука вела мышь, координата под курсором успевала означать другой коммит.
+ */
+test('ширина дорожки не зависит от длины подписи под курсором', async ({ page }) => {
+  const repo = await makeRepo([
+    { message: 'а', write: { 'src/a.ts': 'a\n' } },
+    {
+      message:
+        'Merge pull request #128 from acme/feature/very-long-branch-name: переписать раскладку, ' +
+        'починить перемотку и заодно обновить документацию по всем затронутым модулям',
+      write: { 'src/b.ts': 'b\n' },
+    },
+    { message: 'в', write: { 'src/c.ts': 'c\n' } },
+  ]);
+
+  const cli = await startCli(repo);
+  started.push(cli);
+
+  await page.goto(cli.url);
+  await page.waitForSelector('canvas[data-ready="true"]');
+  await expect(page.locator('#transport')).toBeVisible();
+
+  const slider = page.locator('#track input');
+
+  /** Ширина дорожки и текст подписи на указанном коммите. */
+  const at = async (index: number): Promise<{ width: number; label: string }> => {
+    await slider.fill(String(index));
+    const box = await page.locator('#track').boundingBox();
+    if (!box) throw new Error('Дорожка не найдена');
+    const label = (await page.locator('#cursor-label').textContent()) ?? '';
+    return { width: box.width, label };
+  };
+
+  for (const width of [1440, 1024, 700]) {
+    await page.setViewportSize({ width, height: 800 });
+
+    const short = await at(0);
+    const long = await at(1);
+    const shortAgain = await at(2);
+
+    // Тест сторожит что-то, только если подписи действительно разной длины.
+    expect(
+      long.label.length,
+      `ширина ${width}: подписи должны отличаться длиной, иначе проверка ничего не значит`,
+    ).toBeGreaterThan(short.label.length + 40);
+
+    expect(long.width, `ширина ${width}: ${short.label} -> ${long.label}`).toBe(short.width);
+    expect(shortAgain.width, `ширина ${width}: возврат к короткой теме`).toBe(short.width);
+  }
+
+  // И сама подпись не должна вылезать за панель: длинная тема обрезается.
+  const fits = await page.evaluate(() => {
+    const label = document.getElementById('cursor-label')!.getBoundingClientRect();
+    const panel = document.getElementById('transport')!.getBoundingClientRect();
+    return label.right <= panel.right + 0.5 && label.left >= panel.left - 0.5;
+  });
+  expect(fits).toBe(true);
 });
