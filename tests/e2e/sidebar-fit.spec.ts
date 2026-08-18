@@ -83,8 +83,13 @@ test('автовписывание оставляет дерево справа 
   const panel = await page.locator('#sidebar').boundingBox();
   if (!panel) throw new Error('Боковая панель не нашлась на странице');
   const panelRight = panel.x + panel.width;
-  /** Куда обязана прийтись середина картинки: центр свободной от панели полосы. */
-  const freeCenter = panelRight + (viewport.width - panelRight) / 2;
+  // Справа окно тоже занято: там колонка с настройками физики и карточкой узла.
+  // Свободная полоса — между панелями, а не до края окна; без этого тест
+  // требовал бы от камеры центрировать дерево под правой колонкой.
+  const rail = await page.locator('#right-rail').boundingBox();
+  const railLeft = rail && rail.width > 0 ? rail.x : viewport.width;
+  /** Куда обязана прийтись середина картинки: центр свободной от панелей полосы. */
+  const freeCenter = panelRight + (railLeft - panelRight) / 2;
 
   // Пока раскладка расходится, камера подстраивается на каждом сообщении —
   // смотрим не один кадр, а весь этот отрезок: под панелью не должно оказаться
@@ -111,6 +116,6 @@ test('автовписывание оставляет дерево справа 
   // меряются по пикселям, а вписывается облако центров.
   expect(
     Math.abs(worstCenter - freeCenter),
-    `середина картинки ${worstCenter}, центр свободной полосы ${freeCenter}, центр окна ${viewport.width / 2}`,
+    `середина картинки ${worstCenter}, центр свободной полосы ${freeCenter} (панель справа от ${panelRight}, колонка слева от ${railLeft})`,
   ).toBeLessThan(60);
 });

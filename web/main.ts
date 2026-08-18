@@ -1,7 +1,12 @@
 import { describePack, loadPack, showFatal } from './boot.js';
 import { TimeEngine, type TimeDelta } from './time/engine.js';
 import { buildActiveLinks, diffBorn, radiusFor } from './layout/graph.js';
-import type { FromWorker, LayoutInit, LayoutUpdate } from './layout/protocol.js';
+import type {
+  FromWorker,
+  LayoutInit,
+  LayoutParamsMessage,
+  LayoutUpdate,
+} from './layout/protocol.js';
 import { Camera } from './render/camera.js';
 import { drawScene, type SceneInput } from './render/scene.js';
 import { DIR_COLOR_INDEX, paletteIndexForPath } from './render/palette.js';
@@ -17,6 +22,8 @@ import { Playback } from './time/playback.js';
 import { formatCommitLabel, mountTransport } from './ui/transport.js';
 import { mountSidebar, type SidebarHandles } from './ui/sidebar.js';
 import { mountInspector } from './ui/inspector.js';
+import { mountPhysics } from './ui/physics.js';
+import { decodeParams, encodeParams, type LayoutParams } from './layout/params.js';
 import { freeViewBox } from './ui/viewport.js';
 import { basenameOf, describeNode } from './state/node-info.js';
 import type { Pack } from '../src/model/types.js';
@@ -189,6 +196,8 @@ async function start(): Promise<void> {
   const hud = document.getElementById('hud');
   const sidebarRoot = document.getElementById('sidebar');
   const inspectorRoot = document.getElementById('inspector');
+  const physicsRoot = document.getElementById('physics');
+  const rightRail = document.getElementById('right-rail');
   /** Ручки панели фильтров; звать setSearchCount снаружи было бы нечем без них. */
   let sidebar: SidebarHandles | null = null;
 
@@ -216,14 +225,17 @@ async function start(): Promise<void> {
   };
 
   /**
-   * Полоса, занятая карточкой узла справа. Симметрична reservedLeft: карточка
-   * тоже отступает от края окна, и этот отступ — тоже часть занятой полосы.
+   * Полоса, занятая правой колонкой: настройками физики и карточкой узла.
+   * Меряется по колонке, а не по карточке: панелей теперь две, и занятая ими
+   * ширина — это ширина колонки, что бы в ней сейчас ни было открыто.
+   * Симметрична reservedLeft: колонка тоже отступает от края окна, и этот
+   * отступ — тоже часть занятой полосы.
    * Правую границу прямоугольника вписывания трогать не нужно — fit() уже
    * центрирует облако в [left, left + width], и вычитания ширины достаточно.
    */
   const reservedRight = (): number => {
-    if (!inspectorRoot || inspectorRoot.hidden) return 0;
-    const box = inspectorRoot.getBoundingClientRect();
+    if (!rightRail) return 0;
+    const box = rightRail.getBoundingClientRect();
     if (box.width === 0) return 0;
     return canvas.clientWidth - box.left + 12;
   };
@@ -381,6 +393,47 @@ async function start(): Promise<void> {
   /** Как часто во время воспроизведения разрешено пересобирать карточку узла. */
   const INSPECTOR_REBUILD_INTERVAL_MS = 250;
   let lastInspectorRebuildMs = -Infinity;
+
+  /** Ключ хранилища у настроек физики один на все репозитории: это настройки инструмента, а не проекта. */
+  const PHYSICS_KEY = 'gource-reborn:physics';
+
+  function loadPhysics(): LayoutParams {
+    try {
+      return decodeParams(localStorage.getItem(PHYSICS_KEY));
+    } catch {
+      return decodeParams(null);
+    }
+  }
+
+  function savePhysics(params: LayoutParams): void {
+    try {
+      localStorage.setItem(PHYSICS_KEY, encodeParams(params));
+    } catch {
+      // Не беда: настройки просто не переживут перезагрузку.
+    }
+  }
+
+  function sendParams(params: LayoutParams): void {
+    const message: LayoutParamsMessage = { type: 'params', params };
+    worker.postMessage(message);
+  }
+
+  const physics = physicsRoot
+    ? mountPhysics(physicsRoot, {
+        initial: loadPhysics(),
+        onChange: (params) => {
+          savePhysics(params);
+          sendParams(params);
+        },
+        // Сворачивание меняет ширину колонки, а с ней и полосу, занятую
+        // интерфейсом: без пересчёта камера узнала бы о ней только со
+        // следующим сообщением раскладки, которого может уже не быть.
+        onToggle: () => followLayout(),
+      })
+    : null;
+  // Настройки уходят в воркер сразу: он стартует с умолчаний, а из хранилища
+  // могли приехать другие.
+  if (physics) sendParams(physics.params());
 
   const inspector = inspectorRoot
     ? mountInspector(inspectorRoot, {

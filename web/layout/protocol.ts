@@ -1,3 +1,5 @@
+import type { LayoutParams } from './params.js';
+
 /** Главный поток → воркер: однократная настройка размера мира и структуры дерева. */
 export interface LayoutInit {
   type: 'init';
@@ -62,5 +64,19 @@ export interface LayoutPositions {
   epoch: number;
 }
 
-export type ToWorker = LayoutInit | LayoutUpdate;
+/**
+ * Главный поток → воркер: новые настройки сил.
+ *
+ * Отдельным сообщением, а не полем в `update`: настройки меняются жестом
+ * пользователя раз в несколько секунд, а `update` приходит на каждый коммит.
+ * Класть их в горячее сообщение значило бы гонять одно и то же по десять раз
+ * в секунду и, что хуже, пересобирать силы там, где нужно только двинуть
+ * состав узлов.
+ */
+export interface LayoutParamsMessage {
+  type: 'params';
+  params: LayoutParams;
+}
+
+export type ToWorker = LayoutInit | LayoutUpdate | LayoutParamsMessage;
 export type FromWorker = LayoutPositions;

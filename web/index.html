@@ -76,7 +76,37 @@
       .tree-row button { width: 18px; padding: 0; background: none; border: none;
         color: #8b949e; cursor: pointer; font: inherit; }
       .tree-children { margin-left: 14px; }
-      #inspector { position: fixed; right: 12px; top: 12px; width: 300px; max-height: 70vh;
+      /* Правая колонка: сверху настройки физики, под ними карточка узла.
+         Раньше карточка позиционировалась сама и занимала верхний правый угол;
+         теперь угол делят двое, и раскладывать их должен один контейнер, иначе
+         они наезжали бы друг на друга при открытии второго.
+         pointer-events: none на самой колонке — чтобы её пустые промежутки не
+         отбирали у холста перетаскивание камеры; детям право на клик
+         возвращается явно (тот же приём, что у #hud). */
+      #right-rail { position: fixed; right: 12px; top: 12px;
+        display: flex; flex-direction: column; align-items: flex-end; gap: 8px;
+        max-height: calc(100vh - 24px); pointer-events: none; }
+      #right-rail > * { pointer-events: auto; box-sizing: border-box; width: 300px; }
+      #physics { padding: 8px 10px; background: #161b22e6;
+        border: 1px solid #30363d; border-radius: 8px; }
+      #physics[hidden] { display: none; }
+      .physics-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+      #physics h2 { margin: 0; font-size: 12px; color: #8b949e; font-weight: 600; }
+      .physics-header button { min-width: 22px; padding: 0 6px; background: #21262d;
+        color: #c9d1d9; border: 1px solid #30363d; border-radius: 5px; font: inherit; cursor: pointer; }
+      .physics-body { margin-top: 6px; max-height: 46vh; overflow: auto; }
+      .physics-body[hidden] { display: none; }
+      /* Подпись и значение в строку, ползунок под ними во всю ширину: так
+         цифра меняющейся длины не двигает ползунок по горизонтали. */
+      .physics-row { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px;
+        align-items: center; padding: 2px 0; }
+      .physics-row label { color: #8b949e; }
+      .physics-value { color: #c9d1d9; font-variant-numeric: tabular-nums; }
+      .physics-row input[type="range"] { grid-column: 1 / -1; width: 100%; margin: 0; }
+      .physics-reset { margin-top: 8px; width: 100%; padding: 4px 8px; cursor: pointer;
+        background: #21262d; color: #c9d1d9; border: 1px solid #30363d;
+        border-radius: 5px; font: inherit; }
+      #inspector { max-height: 70vh;
         overflow: auto; padding: 10px 12px; background: #161b22e6;
         border: 1px solid #30363d; border-radius: 8px; }
       #inspector[hidden] { display: none; }
@@ -88,24 +118,25 @@
       #inspector .dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
       #inspector canvas { width: 100%; height: 28px; display: block; margin: 6px 0; }
       #inspector .commit { color: #8b949e; overflow-wrap: anywhere; }
-      /* position: fixed, а не absolute: у #inspector есть overflow: auto, и
-         абсолютно спозиционированный потомок того же элемента прокручивался
-         бы вместе с содержимым — на длинной карточке (пять авторов, пять
-         коммитов) кнопка уезжала бы вверх за край и переставала быть
-         доступной мышью. #inspector сам position: fixed, но это не создаёт
-         содержащий блок для fixed-потомков (только для absolute) — поэтому
-         координаты здесь считаются от вьюпорта: 12px (отступ #inspector) +
-         8px/6px (прежний отступ кнопки) = 20px/18px. Кнопка всё равно исчезает
-         вместе с карточкой: #inspector[hidden] задаёт display: none на всё
-         поддерево, включая fixed-потомков. */
-      #inspector .close { position: fixed; right: 20px; top: 18px; background: none;
-        border: none; color: #8b949e; cursor: pointer; font: inherit; z-index: 1; }
+      /* Кнопка закрытия липнет к верху своего же прокручиваемого содержимого.
+         Раньше она была position: fixed с координатами угла экрана — это
+         держалось на том, что карточка сама стояла в углу. Теперь карточка
+         лежит в колонке под настройками физики, и привязка к экрану оторвала
+         бы кнопку от карточки. sticky даёт то же, ради чего вводился fixed: на
+         длинной карточке кнопка не уезжает за верхний край при прокрутке.
+         Фон обязателен — под кнопкой проезжает содержимое. */
+      #inspector .close { position: sticky; top: -10px; float: right; z-index: 1;
+        margin: -4px -4px 0 0; padding: 2px 6px; background: #161b22; border: none;
+        border-radius: 5px; color: #8b949e; cursor: pointer; font: inherit; }
     </style>
   </head>
   <body>
     <canvas id="scene"></canvas>
     <aside id="sidebar" hidden></aside>
-    <aside id="inspector" hidden></aside>
+    <div id="right-rail">
+      <section id="physics" hidden></section>
+      <aside id="inspector" hidden></aside>
+    </div>
     <div id="hud">
       <div id="status">Читаю историю репозитория…</div>
       <div id="transport" hidden></div>
