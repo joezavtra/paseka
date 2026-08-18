@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { applyPositions, createPlacementTracker, recordEpoch } from '../../web/layout/placement.js';
+import {
+  applyPositions,
+  createPlacementTracker,
+  MAX_PENDING_EPOCHS,
+  recordEpoch,
+} from '../../web/layout/placement.js';
 
 describe('placement', () => {
   it('переносит позиции и поднимает placed только для путей, живых на момент этой эпохи', () => {
@@ -81,6 +86,42 @@ describe('placement', () => {
     },
   );
 
+  it(
+    'РЕГРЕССИЯ (ревью): путь, входящий только в маску более новой эпохи, остаётся ' +
+      'неразмещённым — размещённость подтверждает маска эпохи, а не текущая маска',
+    () => {
+      // Отличие от теста выше: у пути 1 нет унаследованной позиции. Его
+      // родитель родился той же разницей, позицию родителя ему намеренно не
+      // подставляют — значит placed[1] = 0 и координаты нулевые. Ровно на
+      // таком пути видно ошибочное поднятие placed по ТЕКУЩЕЙ маске главного
+      // потока: предыдущий тест его не различал, потому что там placed[1] был
+      // предустановлен единицей и проверка не отличала правильное поведение от
+      // ошибочного.
+      const tracker = createPlacementTracker();
+      recordEpoch(tracker, 1, Uint8Array.from([1, 0]));
+      recordEpoch(tracker, 2, Uint8Array.from([1, 1]));
+
+      const positions = new Float32Array(4);
+      const placed = new Uint8Array(2);
+
+      // Применяем ПЕРВУЮ эпоху. Для пути 1 настоящий NodeStore.positions() дал
+      // бы здесь нули; кладём заметные числа как метку — так тест сторожит и
+      // перенос координат по чужой маске, а не только флаг.
+      applyPositions(tracker, 1, Float32Array.from([100, 200, 777, 888]), positions, placed);
+
+      // Путь 0 — в маске эпохи 1, применился как обычно.
+      expect(positions[0]).toBe(100);
+      expect(positions[1]).toBe(200);
+      expect(placed[0]).toBe(1);
+      // Путь 1 входит только в маску эпохи 2: ответ по эпохе 1 не вправе
+      // объявить его размещённым — иначе фокус камеры по Enter уедет в мировой
+      // ноль необратимо.
+      expect(placed[1]).toBe(0);
+      expect(positions[2]).toBe(0);
+      expect(positions[3]).toBe(0);
+    },
+  );
+
   it('следующая, более новая эпоха размещает путь, который предыдущая эпоха ещё не знала', () => {
     const tracker = createPlacementTracker();
     recordEpoch(tracker, 1, Uint8Array.from([1, 0]));
@@ -123,6 +164,21 @@ describe('placement', () => {
     expect(tracker.pending.has(1)).toBe(false);
     expect(tracker.pending.has(2)).toBe(false);
     expect(tracker.pending.has(3)).toBe(true);
+  });
+
+  it('число хранимых эпох ограничено: без единого ответа воркера карта не растёт', () => {
+    const tracker = createPlacementTracker();
+    const total = MAX_PENDING_EPOCHS + 3;
+    for (let epoch = 1; epoch <= total; epoch++) {
+      recordEpoch(tracker, epoch, Uint8Array.from([1]));
+    }
+
+    expect(tracker.pending.size).toBe(MAX_PENDING_EPOCHS);
+    // Выживают самые свежие, а не самые старые.
+    expect(tracker.pending.has(1)).toBe(false);
+    expect(tracker.pending.has(total - MAX_PENDING_EPOCHS)).toBe(false);
+    expect(tracker.pending.has(total - MAX_PENDING_EPOCHS + 1)).toBe(true);
+    expect(tracker.pending.has(total)).toBe(true);
   });
 
   it('неизвестная эпоха молча ничего не делает', () => {

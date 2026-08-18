@@ -24,6 +24,16 @@ export interface PlacementTracker {
   readonly pending: Map<number, Uint8Array>;
 }
 
+/**
+ * Сколько масок держим одновременно. Живой карте хватает одной-двух записей:
+ * каждый `update` завершается ответом воркера, а тот вычищает всё строго
+ * младше своей эпохи. Предел нужен на случай, когда ответа нет вовсе
+ * (воркер умер, стоит на брейкпоинте) — иначе карта росла бы на
+ * `Uint8Array(pathCount)` за каждый `applyDelta`. Восемь — заведомо больше
+ * нормы и всё ещё пренебрежимо по памяти.
+ */
+export const MAX_PENDING_EPOCHS = 8;
+
 export function createPlacementTracker(): PlacementTracker {
   return { pending: new Map() };
 }
@@ -36,6 +46,16 @@ export function createPlacementTracker(): PlacementTracker {
  */
 export function recordEpoch(tracker: PlacementTracker, epoch: number, active: Uint8Array): void {
   tracker.pending.set(epoch, active);
+
+  // Свежие эпохи важнее старых: ответ на давно отправленную уже не придёт, а
+  // если и придёт — молча отбросится как неизвестная. Эпохи нумеруются строго
+  // по возрастанию и не повторяются, поэтому порядок вставки в `Map` совпадает
+  // с порядком эпох: лишнее снимаем с головы.
+  while (tracker.pending.size > MAX_PENDING_EPOCHS) {
+    const oldest = tracker.pending.keys().next();
+    if (oldest.done) break;
+    tracker.pending.delete(oldest.value);
+  }
 }
 
 /**
