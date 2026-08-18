@@ -81,16 +81,46 @@ export function computeSafeHues(palette: readonly string[], marginDeg: number): 
 const SAFE_HUES: readonly number[] = computeSafeHues(PALETTE, HUE_MARGIN);
 
 /**
+ * Уровни светлоты значка — вторая ось цвета поверх оттенка. Безопасных
+ * оттенков всего около сотни, и при восьми авторах примерно в четверти случаев
+ * двое получали один цвет; в списке авторов и в карточке узла эти двое стоят
+ * рядом, и различить их было нечем, кроме имени. Расширять полосу оттенков
+ * обратно нельзя — она сужена затем, чтобы значок не сливался с узлами.
+ *
+ * Уровни разнесены заметно (а не на пару процентов) и все держатся светлой
+ * половины: значок читается поверх тёмной сцены, а луч автора красится в тот
+ * же цвет.
+ */
+export const AVATAR_LIGHTNESS: readonly number[] = [58, 70, 82];
+
+/**
+ * Оттенок и светлота значка. Палитра оттенков и набор уровней приходят
+ * параметрами, а не берутся из модуля: так тест сравнивает одну ось с двумя,
+ * не подменяя модуль.
+ */
+export function avatarStyle(
+  email: string,
+  hues: readonly number[],
+  lightness: readonly number[],
+): { hue: number; lightness: number } {
+  const key = email.trim().toLowerCase();
+  const total = hues.length * lightness.length;
+  const index = hashString(key) % total;
+  return { hue: hues[index % hues.length]!, lightness: lightness[Math.floor(index / hues.length)]! };
+}
+
+/**
  * Цвет значка выводится из почты, а не из имени: один человек пишет имя
  * по-разному, а почта — тот же ключ, по которому авторы дедуплицируются при
  * сборке пакета, и приводится он так же.
  *
- * Насыщенность и светлота фиксированы: значки должны читаться поверх тёмной
- * сцены. Оттенок выбирается только из SAFE_HUES, поэтому значок не сливается
- * с пастельной палитрой узлов даже при точном попадании хэша в её оттенок.
+ * Оттенок выбирается только из SAFE_HUES, поэтому значок не сливается с
+ * пастельной палитрой узлов даже при точном попадании хэша в её оттенок.
+ * Светлота — вторая ось, она варьируется по AVATAR_LIGHTNESS: одного оттенка
+ * на восьмерых авторов не хватает, а расширять полосу безопасных оттенков
+ * нельзя.
  */
 export function avatarColor(email: string): string {
-  const key = email.trim().toLowerCase();
-  const hue = SAFE_HUES[hashString(key) % SAFE_HUES.length]!;
-  return `hsl(${hue} 70% 66%)`;
+  const style = avatarStyle(email, SAFE_HUES, AVATAR_LIGHTNESS);
+  return `hsl(${style.hue} 70% ${style.lightness}%)`;
 }

@@ -1,5 +1,12 @@
 import { describe, it, expect, vi } from 'vitest';
-import { avatarColor, computeSafeHues, HUE_MARGIN, initialsFor } from '../../web/render/avatar.js';
+import {
+  AVATAR_LIGHTNESS,
+  avatarColor,
+  avatarStyle,
+  computeSafeHues,
+  HUE_MARGIN,
+  initialsFor,
+} from '../../web/render/avatar.js';
 import { PALETTE } from '../../web/render/palette.js';
 
 /**
@@ -143,5 +150,46 @@ describe('computeSafeHues: вырожденный случай плотной п
     expect(safe.length).toBeGreaterThan(0);
     expect(safe.length).toBeLessThan(360);
     expect(warn).not.toHaveBeenCalled();
+  });
+});
+
+describe('вторая ось цвета значка', () => {
+  const hues = computeSafeHues(PALETTE, HUE_MARGIN);
+  const corpus = Array.from({ length: 300 }, (_, i) => `user${i}@example.com`);
+
+  it('уровни светлоты различимы глазом', () => {
+    // Уровни, отличающиеся на пару процентов, дали бы формально разные цвета
+    // и ровно ту же путаницу: ось есть, толку нет.
+    const sorted = [...AVATAR_LIGHTNESS].sort((a, b) => a - b);
+    expect(sorted.length).toBeGreaterThanOrEqual(2);
+    for (let i = 1; i < sorted.length; i++) {
+      expect(sorted[i]! - sorted[i - 1]!).toBeGreaterThanOrEqual(8);
+    }
+    // И все читаются на тёмном фоне.
+    for (const value of sorted) expect(value).toBeGreaterThanOrEqual(45);
+  });
+
+  it('различает больше авторов, чем один только оттенок', () => {
+    const twoAxis = new Set(
+      corpus.map((email) => {
+        const style = avatarStyle(email, hues, AVATAR_LIGHTNESS);
+        return `${style.hue}/${style.lightness}`;
+      }),
+    );
+    const oneAxis = new Set(
+      corpus.map((email) => `${avatarStyle(email, hues, [66]).hue}/66`),
+    );
+    expect(twoAxis.size).toBeGreaterThan(oneAxis.size);
+  });
+
+  it('оттенок остаётся безопасным относительно палитры узлов', () => {
+    for (const email of corpus) {
+      expect(hues).toContain(avatarStyle(email, hues, AVATAR_LIGHTNESS).hue);
+    }
+  });
+
+  it('цвет по-прежнему выводится только из почты и не зависит от регистра', () => {
+    expect(avatarColor(' Anya@E.com ')).toBe(avatarColor('anya@e.com'));
+    expect(avatarColor('anya@e.com')).toMatch(/^hsl\(\d+ 70% \d+%\)$/);
   });
 });
