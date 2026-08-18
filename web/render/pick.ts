@@ -23,6 +23,16 @@ export interface PickInput {
  * пикселя, и без допуска попасть в него мышью невозможно. Перевод из экранных
  * пикселей делает вызывающий (делением на масштаб камеры): о камере эта
  * функция не знает намеренно, иначе её нельзя было бы проверить без DOM.
+ *
+ * Расстояние сравнивается квадратами: подбор зовётся на каждое наведение, то
+ * есть раз в кадр, и корень на каждом рисуемом пути — самая дорогая часть
+ * прохода. Правило от этого не меняется ни в одной своей части. Накрытие:
+ * `d ≤ r` равносильно `d² ≤ r²` при неотрицательных обеих сторонах, и
+ * неотрицательность радиуса проверяется явно — на отрицательном радиусе
+ * (мусорный вход) прежнее сравнение было ложно всегда, а сравнение квадратов
+ * само по себе — нет. Допуск: `d − r ≤ slack` равносильно `d ≤ r + slack`, и
+ * корень остаётся нужен только тем немногим, кто в допуск попал, — зазор для
+ * сравнения между кандидатами считается ровно как прежде.
  */
 export function pickNode(input: PickInput, worldX: number, worldY: number, slack: number): number {
   let covered = NOTHING;
@@ -33,16 +43,19 @@ export function pickNode(input: PickInput, worldX: number, worldY: number, slack
     if (input.active[path] !== 1) continue;
     const dx = input.positions[path * 2]! - worldX;
     const dy = input.positions[path * 2 + 1]! - worldY;
-    const distance = Math.hypot(dx, dy);
+    const distanceSquared = dx * dx + dy * dy;
     const radius = input.radius[path]!;
-    if (distance <= radius) {
+    if (radius >= 0 && distanceSquared <= radius * radius) {
       // Просто перезаписываем: обход идёт по возрастанию, значит последний
       // накрывающий и есть верхний.
       covered = path;
       continue;
     }
-    const gap = distance - radius;
-    if (gap <= slack && gap <= nearGap) {
+    // За пределом допуска — даже не считаем зазор: узел всё равно не кандидат.
+    const reach = radius + slack;
+    if (reach < 0 || distanceSquared > reach * reach) continue;
+    const gap = Math.hypot(dx, dy) - radius;
+    if (gap <= nearGap) {
       near = path;
       nearGap = gap;
     }

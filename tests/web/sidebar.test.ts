@@ -25,8 +25,21 @@ afterEach(() => {
   document.body.replaceChildren();
 });
 
-function mountSidebar(root: HTMLElement, options: SidebarOptions): SidebarHandles {
-  const handles = mountSidebarRaw(root, options);
+/**
+ * Колбэки поиска обязательны (панель обещает счётчик совпадений под полем —
+ * значит, кто-то снаружи обязан его посчитать), а большинству тестов файла они
+ * не интересны: подставляем пустышки, а тесты про поиск передают свои.
+ */
+function mountSidebar(
+  root: HTMLElement,
+  options: Omit<SidebarOptions, 'onSearch' | 'onSearchSubmit'> &
+    Partial<Pick<SidebarOptions, 'onSearch' | 'onSearchSubmit'>>,
+): SidebarHandles {
+  const handles = mountSidebarRaw(root, {
+    onSearch: () => {},
+    onSearchSubmit: () => {},
+    ...options,
+  });
   mountedHandles.push(handles);
   return handles;
 }
@@ -501,16 +514,6 @@ describe('mountSidebar — поиск', () => {
 
     // Событие не подавлено: поле само вправе получить символ "/".
     expect(event.defaultPrevented).toBe(false);
-  });
-
-  it('focusSearch фокусирует поле поиска программно', () => {
-    const root = document.createElement('div');
-    document.body.append(root);
-    const handles = mountSidebar(root, { pack, onFilter: () => {}, onVisibility: () => {} });
-
-    handles.focusSearch();
-    const field = root.querySelector<HTMLInputElement>('input[data-role="search"]')!;
-    expect(document.activeElement).toBe(field);
   });
 
   it('снимает глобальный обработчик "/" при размонтировании', () => {

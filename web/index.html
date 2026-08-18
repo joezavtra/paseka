@@ -6,6 +6,10 @@
     <title>gource-reborn</title>
     <style>
       :root { color-scheme: dark; }
+      /* Фон страницы обязан совпадать с фоном сцены: источник истины для кода —
+         SCENE_BACKGROUND в web/render/palette.ts (оттуда его берут отрисовка
+         значков и тест их контраста). CSS модуль не читает, поэтому здесь копия;
+         меняя цвет, правьте оба места — и только эти два. */
       html, body { margin: 0; height: 100%; background: #0b0d12; color: #c9d1d9;
         font: 13px/1.5 ui-sans-serif, system-ui, sans-serif; overflow: hidden; }
       #scene { display: block; width: 100vw; height: 100vh; }

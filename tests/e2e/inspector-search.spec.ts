@@ -20,6 +20,14 @@ interface NodePixel {
 const OPAQUE_ALPHA_THRESHOLD = 200;
 
 /**
+ * На сколько CSS-пикселей очередная искомая точка должна отстоять от уже
+ * опробованных, чтобы считаться другим узлом. Узлы этой фикстуры на экране
+ * заметно мельче, а вплотную друг к другу их не ставит раскладка: отталкивание
+ * разводит соседей на десятки пикселей.
+ */
+const MIN_PIXEL_SEPARATION_PX = 24;
+
+/**
  * Ищет на холсте пиксель, который точно принадлежит телу узла дерева, а не
  * панелям поверх него: правее правого края боковой панели фильтров и выше
  * верхней границы HUD (строка статуса и панель транспорта прибиты к низу
@@ -56,7 +64,7 @@ const OPAQUE_ALPHA_THRESHOLD = 200;
  * не молча кликнуть в пустое место и получить ложно-зелёный результат на
  * незаполненном инспекторе.
  */
-async function findNodePixel(page: Page): Promise<NodePixel> {
+async function findNodePixel(page: Page, avoid: NodePixel[] = []): Promise<NodePixel> {
   const sidebarBox = await page.locator('#sidebar').boundingBox();
   const hudBox = await page.locator('#hud').boundingBox();
   if (!sidebarBox) throw new Error('Боковая панель #sidebar не нашлась на странице.');
@@ -65,7 +73,7 @@ async function findNodePixel(page: Page): Promise<NodePixel> {
   const hudTop = hudBox.y;
 
   const point = await page.evaluate(
-    async ({ sidebarRight, hudTop, opaqueAlphaThreshold }) => {
+    async ({ sidebarRight, hudTop, opaqueAlphaThreshold, avoid, minSeparation }) => {
       const canvas = document.getElementById('scene') as HTMLCanvasElement;
       const img = new Image();
       const decoded = new Promise<void>((resolve, reject) => {
@@ -89,17 +97,27 @@ async function findNodePixel(page: Page): Promise<NodePixel> {
         const cssX = px / dpr;
         const cssY = py / dpr;
         if (cssX <= sidebarRight || cssY >= hudTop) continue;
+        // Пиксели рядом с уже опробованной точкой принадлежат тому же узлу:
+        // повторный клик туда же дал бы тот же выбор и зациклил поиск.
+        if (avoid.some((p) => Math.hypot(p.x - cssX, p.y - cssY) < minSeparation)) continue;
         return { x: cssX, y: cssY };
       }
       return null;
     },
-    { sidebarRight, hudTop, opaqueAlphaThreshold: OPAQUE_ALPHA_THRESHOLD },
+    {
+      sidebarRight,
+      hudTop,
+      opaqueAlphaThreshold: OPAQUE_ALPHA_THRESHOLD,
+      avoid,
+      minSeparation: MIN_PIXEL_SEPARATION_PX,
+    },
   );
 
   if (!point) {
     throw new Error(
       `Не нашли на холсте пиксель тела узла (альфа ≥ ${OPAQUE_ALPHA_THRESHOLD}) правее панели ` +
-        `фильтров (x > ${sidebarRight}) и выше HUD (y < ${hudTop}).`,
+        `фильтров (x > ${sidebarRight}), выше HUD (y < ${hudTop}) и не ближе ` +
+        `${MIN_PIXEL_SEPARATION_PX} px к уже опробованным точкам (${JSON.stringify(avoid)}).`,
     );
   }
   return point;
@@ -414,4 +432,48 @@ test('карточка узла и поиск работают в собранн
       `совпадений (было ${JSON.stringify(beforeEmptyEnter)}, стало ${JSON.stringify(afterEmptyEnter)}) ` +
       `— камера не должна была никуда ехать`,
   ).toBeLessThan(JITTER_TOLERANCE_PX);
+
+  // --- Скрытие выбранного узла закрывает карточку ---
+
+  // Карточка утверждает про сцену («на сцене показано N»), поэтому пережить
+  // исчезновение своего узла со сцены она не может: у скрытой папки карточка
+  // оставалась открытой и печатала «на сцене показано 0» — утверждение,
+  // противоречащее сцене. Проверяем через панель навигатора, то есть тем же
+  // жестом, которым это и наблюдалось: снять галочку «показывать».
+  const tried: NodePixel[] = [];
+  let selectedName = '';
+  let selectedPath = '';
+  for (let attempt = 0; attempt < 4 && selectedPath === ''; attempt++) {
+    const spot = await findNodePixel(page, tried);
+    tried.push(spot);
+    await page.mouse.click(spot.x, spot.y);
+    await expect(inspector).toBeVisible();
+    selectedName = (await inspector.locator('h2').innerText()).trim();
+    // Корень скрыть нечем — навигатор показывает только его потомков; если
+    // клик подобрал корень, пробуем другой узел.
+    if (selectedName === repoName) continue;
+    const pathLine = inspector.locator('.path');
+    // Строка пути прячется, когда дословно повторяет заголовок (файл или
+    // папка прямо в корне репозитория) — тогда полный путь и есть имя.
+    selectedPath = (await pathLine.isVisible()) ? (await pathLine.innerText()).trim() : selectedName;
+  }
+  expect(selectedPath, `не удалось выбрать кликом ни один узел, кроме корня (${repoName})`).not.toBe(
+    '',
+  );
+
+  // Скрываем папку верхнего уровня, в которой лежит выбранный узел (или его
+  // саму, если выбрана именно она): вместе с поддеревом узел уходит со сцены.
+  const topFolder = selectedPath.split('/')[0]!;
+  const folderCheckbox = page.locator(`#sidebar input[aria-label="Показывать папку: ${topFolder}"]`);
+  await expect(
+    folderCheckbox,
+    `в навигаторе нет галочки папки «${topFolder}» (выбран узел ${selectedPath})`,
+  ).toHaveCount(1);
+  await folderCheckbox.uncheck();
+
+  await expect(
+    inspector,
+    `карточка узла ${selectedPath} осталась открытой после скрытия папки «${topFolder}» — ` +
+      `она продолжает рассказывать про узел, которого на сцене больше нет`,
+  ).toBeHidden();
 });

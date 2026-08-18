@@ -89,7 +89,15 @@ export function mountInspector(root: HTMLElement, options: InspectorOptions): In
     root.hidden = false;
 
     heading.textContent = info.name;
-    path.textContent = info.fullPath === '' ? pack.meta.repoName : info.fullPath;
+    // Вторая строка — полный путь, и у всего, что лежит прямо в корне
+    // репозитория (а также у самого корня), он дословно совпадает с
+    // заголовком: «tests / tests», «package-lock.json / package-lock.json».
+    // Строка, повторяющая соседнюю, не добавляет ничего — прячем её целиком,
+    // а не оставляем пустой: иначе от неё остался бы вертикальный отступ.
+    const fullPath = info.fullPath === '' ? pack.meta.repoName : info.fullPath;
+    const pathAddsNothing = fullPath === info.name;
+    path.textContent = pathAddsNothing ? '' : fullPath;
+    path.hidden = pathAddsNothing;
 
     const summaryParts: string[] = [`строк: ${info.lines}`];
     if (info.isDir) {
@@ -104,7 +112,10 @@ export function mountInspector(root: HTMLElement, options: InspectorOptions): In
         summaryParts.push(representedClause(info.represented));
       }
     }
-    if (!info.alive) summaryParts.push('удалён');
+    // «Удалён» — про узел, который был и исчез. Неживой узел бывает и другим:
+    // на курсоре раньше его рождения (birthCommit === -1) он ещё не появился,
+    // и пометка об удалении спорила бы со строкой «рождение: —» прямо под ней.
+    if (!info.alive && info.birthCommit >= 0) summaryParts.push('удалён');
     summary.textContent = summaryParts.join(' · ');
 
     born.textContent = `рождение: ${commitDateOrDash(pack, info.birthCommit)}`;

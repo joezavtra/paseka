@@ -13,14 +13,19 @@ export interface SidebarOptions {
   /**
    * Образец поиска меняется на каждое нажатие: обводка на сцене дешёвая и
    * должна обновляться сразу, иначе поле выглядело бы нерабочим.
+   *
+   * Обязателен, как и `onSearchSubmit`: панель показывает поле поиска и
+   * обещает под ним счётчик совпадений (`setSearchCount`), а посчитать их
+   * может только тот, кто держит сцену. Необязательный колбэк означал бы
+   * панель, которая обещает счётчик, которому неоткуда взяться.
    */
-  onSearch?(query: string): void;
+  onSearch(query: string): void;
   /**
    * Образец поиска подтверждён нажатием Enter: только теперь имеет смысл
    * двигать камеру — на каждую букву это было бы потерей контекста для
    * пользователя, который ещё дописывает образец.
    */
-  onSearchSubmit?(query: string): void;
+  onSearchSubmit(query: string): void;
 }
 
 export interface SidebarHandles {
@@ -40,8 +45,6 @@ export interface SidebarHandles {
    * что ей передали.
    */
   setSearchCount(count: number, query: string): void;
-  /** Переносит клавиатурный фокус в поле поиска — цель горячей клавиши `/`. */
-  focusSearch(): void;
 }
 
 /**
@@ -137,11 +140,11 @@ export function mountSidebar(root: HTMLElement, options: SidebarOptions): Sideba
   searchField.placeholder = 'имя или образец';
   searchField.setAttribute('aria-labelledby', searchHeading.id);
   searchField.addEventListener('input', () => {
-    options.onSearch?.(searchField.value);
+    options.onSearch(searchField.value);
   });
   searchField.addEventListener('keydown', (event) => {
     if (event.key !== 'Enter') return;
-    options.onSearchSubmit?.(searchField.value);
+    options.onSearchSubmit(searchField.value);
   });
   const searchCount = document.createElement('div');
   searchCount.dataset.role = 'search-count';
@@ -366,10 +369,6 @@ export function mountSidebar(root: HTMLElement, options: SidebarOptions): Sideba
       } else {
         searchCount.textContent = 'ничего не найдено';
       }
-    },
-
-    focusSearch(): void {
-      searchField.focus();
     },
 
     unmount(): void {

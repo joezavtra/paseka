@@ -12,6 +12,7 @@ import { Playback } from './time/playback.js';
 import { formatCommitLabel, mountTransport } from './ui/transport.js';
 import { mountSidebar, type SidebarHandles } from './ui/sidebar.js';
 import { mountInspector } from './ui/inspector.js';
+import { freeViewBox } from './ui/viewport.js';
 import { basenameOf, describeNode } from './state/node-info.js';
 import type { Pack } from '../src/model/types.js';
 import { RecentEvents } from './time/recent.js';
@@ -92,6 +93,10 @@ async function start(): Promise<void> {
     // Заполняется refreshHits() из projectHits; до первого поиска пусто —
     // кольцо обводки рисовать нечего.
     hit: new Uint8Array(pathCount),
+    // Сколько единиц в hit — приходит из того же projectHits, что и маска.
+    // Ноль до первого поиска: и слой обводки, и отбор подписей спрашивают
+    // именно это число, а не пересчитывают маску каждый по-своему.
+    hitCount: 0,
     beams,
     actors,
     // Кто представляет путь на экране; заполняется в applyDelta из
@@ -222,16 +227,15 @@ async function start(): Promise<void> {
    * жить в одном месте. Фокус камеры по Enter в поиске использует ту же
    * геометрию — иначе рано или поздно она посчиталась бы дважды и разошлась
    * (например, если карточку узла подвинут, а один из двух расчётов забудут
-   * поправить).
+   * поправить). Здесь остаётся только замер полос по DOM: сама арифметика
+   * живёт в freeViewBox (web/ui/viewport.ts), где её достаёт юнит-тест.
    */
-  const viewBox = (): { left: number; width: number; height: number } => {
-    const reservedBottom = hud ? hud.offsetHeight + 12 : 0;
-    const left = reservedLeft();
-    const right = reservedRight();
-    const width = Math.max(1, canvas.clientWidth - left - right);
-    const height = Math.max(1, canvas.clientHeight - reservedBottom);
-    return { left, width, height };
-  };
+  const viewBox = (): { left: number; width: number; height: number } =>
+    freeViewBox(canvas.clientWidth, canvas.clientHeight, {
+      left: reservedLeft(),
+      right: reservedRight(),
+      bottom: hud ? hud.offsetHeight + 12 : 0,
+    });
 
   const followLayout = (): void => {
     const { left, width, height } = viewBox();
@@ -259,6 +263,7 @@ async function start(): Promise<void> {
     if (searchQuery.trim().length === 0) return { first: -1, count: 0 };
     const projected = projectHits(searchHits, scene.representative, scene.active, engine.alive);
     scene.hit = projected.drawnHits;
+    scene.hitCount = projected.count;
     sidebar?.setSearchCount(projected.count, searchQuery);
     return { first: projected.first, count: projected.count };
   }
@@ -280,6 +285,7 @@ async function start(): Promise<void> {
       // образец не введён, applyDelta будет обходить это дешёвым ранним
       // выходом выше.
       scene.hit.fill(0);
+      scene.hitCount = 0;
       sidebar?.setSearchCount(0, searchQuery);
       return { first: -1, count: 0 };
     }
@@ -381,6 +387,19 @@ async function start(): Promise<void> {
       })
     : null;
 
+  /**
+   * Снимает выбор и закрывает карточку: и промах клика, и исчезновение
+   * выбранного узла со сцены заканчиваются одним и тем же. Полоса справа
+   * освобождается немедленно, но только если карточка и правда была открыта —
+   * иначе клик мимо дерева гонял бы автовписывание без всякой причины.
+   */
+  function clearSelection(): void {
+    selected = -1;
+    const wasVisible = inspectorRoot ? !inspectorRoot.hidden : false;
+    inspector?.hide();
+    if (wasVisible) followLayout();
+  }
+
   /** Пересобирает карточку выбранного узла на текущем курсоре — единственное место, где это делается. */
   function showSelected(): void {
     if (selected < 0 || !inspector || !inspectorRoot) return;
@@ -449,13 +468,7 @@ async function start(): Promise<void> {
 
     const path = pickNode(scene, wx, wy, PICK_SLACK_PX / camera.scale);
     if (path === NOTHING) {
-      selected = -1;
-      // Освобождаем полосу справа немедленно, но только если карточка и
-      // правда была открыта — иначе клик мимо дерева гонял бы автовписывание
-      // без всякой причины.
-      const wasVisible = inspectorRoot ? !inspectorRoot.hidden : false;
-      inspector?.hide();
-      if (wasVisible) followLayout();
+      clearSelection();
       return;
     }
     selected = path;
@@ -617,7 +630,24 @@ async function start(): Promise<void> {
     // Курсор или видимость сдвинулись — карточка выбранного узла устарела.
     // Саму пересборку делает цикл кадра не чаще раза в
     // INSPECTOR_REBUILD_INTERVAL_MS (см. showSelected), а не этот вызов.
-    if (selected >= 0) inspectorDirty = true;
+    //
+    // Но сперва — жив ли ещё сам выбор. Видимость могла только что убрать
+    // выбранный узел со сцены: его скрыли или его поглотил свёрнутый предок.
+    // Вопрос задаётся держателю рисуемой маски (representative из
+    // resolveVisibility), а не выводится карточкой из своих чисел — иначе
+    // получается ровно то, что и получалось: у скрытой папки карточка
+    // оставалась открытой и печатала «на сцене показано 0», то есть
+    // утверждение о сцене, противоречащее сцене. Узла нет — карточке не о чем
+    // говорить, и она закрывается вместе с выбором.
+    //
+    // Живость сюда намеренно не входит: карточка умеет рассказывать и про уже
+    // удалённый, и про ещё не родившийся узел (см. web/ui/inspector.ts), и
+    // курсор, ушедший за пределы его жизни, — не повод её закрывать. Убирает
+    // узел видимость, а не время: это разные оси.
+    if (selected >= 0) {
+      if (scene.representative[selected] !== selected) clearSelection();
+      else inspectorDirty = true;
+    }
   }
 
   const transportRoot = document.getElementById('transport');

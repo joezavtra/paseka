@@ -29,7 +29,9 @@ const pack = buildPack(
       authorEmail: 'bo@e.com',
       timestamp: 1700086400,
       subject: 'второй',
-      changes: [change('docs/c.md', 2)],
+      // Файл прямо в корне репозитория: его полный путь и есть его имя — на
+      // этом проверяется, что карточка не печатает одну и ту же строку дважды.
+      changes: [change('docs/c.md', 2), change('README.md', 3)],
     },
   ],
   { repoName: 'demo', head: 'c1' },
@@ -42,11 +44,61 @@ function infoFor(path: string, options: { represented?: number } = {}) {
   return describeNode(pack, id, engine.cursor, engine.alive, engine.sizes, options);
 }
 
+/** Отдельный пакет с удалением файла: на нём проверяется пометка «удалён». */
+const deletedPack = buildPack(
+  [
+    {
+      hash: 'd0',
+      authorName: 'Аня Петрова',
+      authorEmail: 'anya@e.com',
+      timestamp: 1700000000,
+      subject: 'завёл',
+      changes: [change('src/gone.ts', 7)],
+    },
+    {
+      hash: 'd1',
+      authorName: 'Аня Петрова',
+      authorEmail: 'anya@e.com',
+      timestamp: 1700086400,
+      subject: 'убрал',
+      changes: [
+        { path: 'src/gone.ts', kind: 'delete' as const, added: 0, deleted: 7, binary: false },
+      ],
+    },
+  ],
+  { repoName: 'demo', head: 'd1' },
+);
+
+/** Описание файла, который к концу истории уже удалён. */
+function infoDeleted() {
+  const engine = new TimeEngine(deletedPack);
+  engine.seek(deletedPack.meta.commitCount - 1);
+  const id = deletedPack.paths.indexOf('src/gone.ts');
+  return describeNode(deletedPack, id, engine.cursor, engine.alive, engine.sizes);
+}
+
+/**
+ * То же описание, но на курсоре до начала истории: узел ещё не родился —
+ * `birthCommit === -1`, живым он не числится. Не то же самое, что удалённый,
+ * и карточка обязана различать эти два случая.
+ */
+function infoBeforeBirth(path: string) {
+  const engine = new TimeEngine(pack);
+  engine.seek(-1);
+  const id = pack.paths.indexOf(path);
+  return describeNode(pack, id, engine.cursor, engine.alive, engine.sizes);
+}
+
 describe('карточка узла', () => {
   it('до выбора узла скрыта', () => {
     const root = document.createElement('aside');
-    mountInspector(root, { pack });
+    // Размонтируем, как и все остальные тесты файла: happy-dom даёт один
+    // document на весь файл, карточка вешает на него глобальный обработчик
+    // Escape, и не снятая подписка утекала бы в соседние тесты — ровно то,
+    // что сторожит тест «unmount снимает обработчик Escape» ниже.
+    const handles = mountInspector(root, { pack });
     expect(root.hidden).toBe(true);
+    handles.unmount();
   });
 
   it('показывает путь, размер и авторов', () => {
@@ -95,6 +147,70 @@ describe('карточка узла', () => {
     handles.show(infoFor('src', { represented: 1 }));
     expect(root.textContent).toContain('файлов: 2');
     expect(root.textContent).toContain('на сцене показан 1');
+    handles.unmount();
+  });
+
+  it('не повторяет имя второй строкой, когда путь совпадает с заголовком', () => {
+    // Всё, что лежит прямо в корне репозитория, печаталось дважды: «README.md»
+    // заголовком и «README.md» строкой пути под ним. Вторая строка не
+    // добавляет ничего и не должна занимать место.
+    const root = document.createElement('aside');
+    const handles = mountInspector(root, { pack });
+    handles.show(infoFor('README.md'));
+
+    expect(root.querySelector('h2')!.textContent).toBe('README.md');
+    const pathLine = root.querySelector<HTMLElement>('.path')!;
+    expect(pathLine.hidden).toBe(true);
+    expect(pathLine.textContent).toBe('');
+    handles.unmount();
+  });
+
+  it('у корня репозитория тоже не повторяет имя', () => {
+    const root = document.createElement('aside');
+    const handles = mountInspector(root, { pack });
+    handles.show(infoFor(''));
+
+    expect(root.querySelector('h2')!.textContent).toBe('demo');
+    expect(root.querySelector<HTMLElement>('.path')!.hidden).toBe(true);
+    handles.unmount();
+  });
+
+  it('у вложенного файла печатает полный путь отдельной строкой', () => {
+    // Обратная сторона той же правки: там, где путь добавляет каталоги,
+    // строка обязана остаться — иначе карточка перестала бы отвечать «где
+    // лежит этот файл».
+    const root = document.createElement('aside');
+    const handles = mountInspector(root, { pack });
+    handles.show(infoFor('src/a.ts'));
+
+    const pathLine = root.querySelector<HTMLElement>('.path')!;
+    expect(pathLine.hidden).toBe(false);
+    expect(pathLine.textContent).toBe('src/a.ts');
+    handles.unmount();
+  });
+
+  it('удалённый узел помечается удалённым', () => {
+    // Обратная сторона правки ниже: пометка обязана остаться там, где она
+    // правдива — узел был и исчез. Без этой проверки мутант «убрать пометку
+    // совсем» прошёл бы незамеченным.
+    const root = document.createElement('aside');
+    const handles = mountInspector(root, { pack: deletedPack });
+    handles.show(infoDeleted());
+
+    expect(root.textContent).toContain('удалён');
+    expect(root.textContent).not.toContain('рождение: —');
+    handles.unmount();
+  });
+
+  it('ещё не родившийся узел не помечается удалённым', () => {
+    // На курсоре до начала истории узел не жив, но и не удалён: пометка
+    // «удалён» спорила бы со строкой «рождение: —» прямо под ней.
+    const root = document.createElement('aside');
+    const handles = mountInspector(root, { pack });
+    handles.show(infoBeforeBirth('src/a.ts'));
+
+    expect(root.textContent).toContain('рождение: —');
+    expect(root.textContent).not.toContain('удалён');
     handles.unmount();
   });
 

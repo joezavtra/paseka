@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   DEFAULT_LABEL_LIMIT,
+  MAX_LABELED_HITS,
   MIN_LABEL_RADIUS_PX,
   labelFor,
   pluralFiles,
@@ -91,7 +92,20 @@ function baseInput(count: number): LabelInput {
     radius: new Float32Array(count).fill(1),
     alpha: new Float32Array(count).fill(1),
     hit: new Uint8Array(count),
+    hitCount: 0,
   };
+}
+
+/**
+ * Помечает пути найденными и выставляет счётчик совпадений так, как это
+ * делает проекция попаданий: маска и счётчик приходят из одного места
+ * (web/state/search.ts), и расходиться им в тесте тоже незачем.
+ */
+function markHits(input: LabelInput, ...paths: number[]): void {
+  for (const path of paths) input.hit[path] = 1;
+  let count = 0;
+  for (let path = 0; path < input.hit.length; path++) if (input.hit[path] === 1) count++;
+  input.hitCount = count;
 }
 
 describe('selectLabels', () => {
@@ -218,7 +232,7 @@ describe('selectLabels', () => {
   it('мелкий узел подписывается, если он найден поиском', () => {
     const input = baseInput(1);
     input.radius[0] = 1;
-    input.hit[0] = 1;
+    markHits(input, 0);
     const result = selectLabels(input, identityCamera, WIDTH, HEIGHT);
     expect(result).toEqual([0]);
   });
@@ -243,7 +257,7 @@ describe('selectLabels', () => {
     const input = baseInput(1);
     input.radius[0] = 1;
     input.alpha[0] = 0.12;
-    input.hit[0] = 1;
+    markHits(input, 0);
     const result = selectLabels(input, identityCamera, WIDTH, HEIGHT);
     expect(result).toEqual([]);
   });
@@ -254,13 +268,59 @@ describe('selectLabels', () => {
     input.radius[0] = 30;
     // 1: найден поиском, мелкий радиус.
     input.radius[1] = 2;
-    input.hit[1] = 1;
+    markHits(input, 1);
     // 2: наведён, ещё мельче.
     input.radius[2] = 1;
     // 3: крупный, но меньше узла 0.
     input.radius[3] = 15;
     const result = selectLabels(input, identityCamera, WIDTH, HEIGHT, { hovered: 2 });
     expect(result).toEqual([2, 1, 0, 3]);
+  });
+
+  it('на многих совпадениях мелкий найденный узел подписи не получает', () => {
+    // MAX_LABELED_HITS + 1 совпадений — тот самый удачный поиск, на котором
+    // подписи найденных ложились друг на друга и вытесняли всё остальное.
+    // Обводка на сцене остаётся, а имя показывает наведение.
+    const count = MAX_LABELED_HITS + 1;
+    const input = baseInput(count);
+    markHits(input, ...Array.from({ length: count }, (_, i) => i));
+    expect(selectLabels(input, identityCamera, WIDTH, HEIGHT)).toEqual([]);
+  });
+
+  it('пока совпадений немного, мелкие найденные подписываются все', () => {
+    // Ровно на пороге право ещё есть: иначе «немного» означало бы что-то
+    // другое, чем написано в MAX_LABELED_HITS.
+    const input = baseInput(MAX_LABELED_HITS);
+    markHits(input, ...Array.from({ length: MAX_LABELED_HITS }, (_, i) => i));
+    expect(selectLabels(input, identityCamera, WIDTH, HEIGHT)).toHaveLength(MAX_LABELED_HITS);
+  });
+
+  it('на многих совпадениях найденный крупный узел не лезет вперёд более крупных', () => {
+    // Право на подпись и место в начале очереди снимаются вместе: иначе
+    // десятки найденных крупных узлов так же выдавили бы из лимита всё
+    // остальное, просто без каши из мелких.
+    const count = MAX_LABELED_HITS + 2;
+    const input = baseInput(count);
+    // 0 — найден и крупный; 1 — не найден и крупнее его; остальные найдены и
+    // мелкие (нужны только затем, чтобы совпадений стало больше порога).
+    input.radius[0] = 20;
+    input.radius[1] = 30;
+    const hits = Array.from({ length: count }, (_, i) => i).filter((i) => i !== 1);
+    markHits(input, ...hits);
+    const result = selectLabels(input, identityCamera, WIDTH, HEIGHT);
+    // Первым идёт самый крупный, а не найденный: за порогом находка не даёт
+    // ни подписи мелкому, ни очереди крупному.
+    expect(result).toEqual([1, 0]);
+  });
+
+  it('счётчик совпадений в нуле отменяет право находки на подпись', () => {
+    // Держатель числа совпадений — проекция попаданий, и отбор верит ей, а не
+    // пересчитывает маску сам: нулевой счётчик означает «поиска нет».
+    const input = baseInput(1);
+    input.radius[0] = 1;
+    input.hit[0] = 1;
+    input.hitCount = 0;
+    expect(selectLabels(input, identityCamera, WIDTH, HEIGHT)).toEqual([]);
   });
 
   it('внутри одной группы приоритета сортирует по радиусу, а не по порядку вставки', () => {
