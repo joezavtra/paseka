@@ -184,3 +184,43 @@ describe('Camera — свободная полоса слева под боко�
     expect(ax).toBeLessThan(200);
   });
 });
+
+describe('Camera.focusOn', () => {
+  it('ставит точку мира ровно в центр отведённого прямоугольника', () => {
+    const camera = new Camera();
+    camera.scale = 3;
+    camera.focusOn(12, -7, 800, 600);
+    const [sx, sy] = camera.toScreen(12, -7);
+    expect(sx).toBeCloseTo(400, 5);
+    expect(sy).toBeCloseTo(300, 5);
+  });
+
+  it('учитывает левую полосу при центрировании', () => {
+    const camera = new Camera();
+    camera.scale = 2;
+    const left = 280;
+    camera.focusOn(5, 5, 1000 - left, 600, left);
+    const [sx, sy] = camera.toScreen(5, 5);
+    expect(sx).toBeCloseTo(left + (1000 - left) / 2, 5);
+    expect(sy).toBeCloseTo(300, 5);
+  });
+
+  it('не меняет масштаб', () => {
+    const camera = new Camera();
+    camera.scale = 4.5;
+    camera.focusOn(1, 1, 800, 600);
+    expect(camera.scale).toBe(4.5);
+  });
+
+  it('объявляет камеру управляемой вручную: autoFit после этого молчит', () => {
+    const camera = new Camera();
+    camera.focusOn(0, 0, 800, 600);
+    const fitted = camera.autoFit(
+      Float32Array.from([-5, -5, 5, 5]),
+      Uint8Array.from([1, 1]),
+      800,
+      600,
+    );
+    expect(fitted).toBe(false);
+  });
+});

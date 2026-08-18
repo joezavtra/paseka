@@ -6,6 +6,10 @@
     <title>gource-reborn</title>
     <style>
       :root { color-scheme: dark; }
+      /* Фон страницы обязан совпадать с фоном сцены: источник истины для кода —
+         SCENE_BACKGROUND в web/render/palette.ts (оттуда его берут отрисовка
+         значков и тест их контраста). CSS модуль не читает, поэтому здесь копия;
+         меняя цвет, правьте оба места — и только эти два. */
       html, body { margin: 0; height: 100%; background: #0b0d12; color: #c9d1d9;
         font: 13px/1.5 ui-sans-serif, system-ui, sans-serif; overflow: hidden; }
       #scene { display: block; width: 100vw; height: 100vh; }
@@ -61,11 +65,36 @@
       .tree-row button { width: 18px; padding: 0; background: none; border: none;
         color: #8b949e; cursor: pointer; font: inherit; }
       .tree-children { margin-left: 14px; }
+      #inspector { position: fixed; right: 12px; top: 12px; width: 300px; max-height: 70vh;
+        overflow: auto; padding: 10px 12px; background: #161b22e6;
+        border: 1px solid #30363d; border-radius: 8px; }
+      #inspector[hidden] { display: none; }
+      /* padding-right резервирует место под кнопку закрытия: без него длинное
+         имя файла подтекает под неё. */
+      #inspector h2 { margin: 0; font-size: 14px; padding-right: 22px; }
+      #inspector .path { color: #8b949e; overflow-wrap: anywhere; margin: 2px 0 8px; }
+      #inspector .row { display: flex; align-items: center; gap: 6px; padding: 1px 0; }
+      #inspector .dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+      #inspector canvas { width: 100%; height: 28px; display: block; margin: 6px 0; }
+      #inspector .commit { color: #8b949e; overflow-wrap: anywhere; }
+      /* position: fixed, а не absolute: у #inspector есть overflow: auto, и
+         абсолютно спозиционированный потомок того же элемента прокручивался
+         бы вместе с содержимым — на длинной карточке (пять авторов, пять
+         коммитов) кнопка уезжала бы вверх за край и переставала быть
+         доступной мышью. #inspector сам position: fixed, но это не создаёт
+         содержащий блок для fixed-потомков (только для absolute) — поэтому
+         координаты здесь считаются от вьюпорта: 12px (отступ #inspector) +
+         8px/6px (прежний отступ кнопки) = 20px/18px. Кнопка всё равно исчезает
+         вместе с карточкой: #inspector[hidden] задаёт display: none на всё
+         поддерево, включая fixed-потомков. */
+      #inspector .close { position: fixed; right: 20px; top: 18px; background: none;
+        border: none; color: #8b949e; cursor: pointer; font: inherit; z-index: 1; }
     </style>
   </head>
   <body>
     <canvas id="scene"></canvas>
     <aside id="sidebar" hidden></aside>
+    <aside id="inspector" hidden></aside>
     <div id="hud">
       <div id="status">Читаю историю репозитория…</div>
       <div id="transport" hidden></div>

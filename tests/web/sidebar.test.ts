@@ -1,9 +1,48 @@
 // @vitest-environment happy-dom
-import { describe, it, expect } from 'vitest';
-import { directChildren, mountSidebar, topExtensions } from '../../web/ui/sidebar.js';
+import { describe, it, expect, afterEach } from 'vitest';
+import {
+  directChildren,
+  mountSidebar as mountSidebarRaw,
+  topExtensions,
+  type SidebarHandles,
+  type SidebarOptions,
+} from '../../web/ui/sidebar.js';
 import { buildPack } from '../../src/model/build.js';
 import type { FilterSpec } from '../../web/state/filter.js';
 import type { VisibilitySpec } from '../../web/state/visibility.js';
+
+// happy-dom создаёт один глобальный `document` на весь файл, а не на каждый
+// тест (см. tests/web/transport-dom.test.ts): панель с поиском теперь вешает
+// глобальный обработчик `/` на document, и не размонтированная панель из
+// предыдущего теста продолжала бы его слушать и искажать следующий тест.
+// Поэтому каждый mountSidebar в этом файле регистрируется здесь и обязательно
+// размонтируется в afterEach.
+let mountedHandles: SidebarHandles[] = [];
+
+afterEach(() => {
+  for (const handles of mountedHandles) handles.unmount();
+  mountedHandles = [];
+  document.body.replaceChildren();
+});
+
+/**
+ * Колбэки поиска обязательны (панель обещает счётчик совпадений под полем —
+ * значит, кто-то снаружи обязан его посчитать), а большинству тестов файла они
+ * не интересны: подставляем пустышки, а тесты про поиск передают свои.
+ */
+function mountSidebar(
+  root: HTMLElement,
+  options: Omit<SidebarOptions, 'onSearch' | 'onSearchSubmit'> &
+    Partial<Pick<SidebarOptions, 'onSearch' | 'onSearchSubmit'>>,
+): SidebarHandles {
+  const handles = mountSidebarRaw(root, {
+    onSearch: () => {},
+    onSearchSubmit: () => {},
+    ...options,
+  });
+  mountedHandles.push(handles);
+  return handles;
+}
 
 const change = (path: string) => ({
   path,
@@ -340,5 +379,151 @@ describe('mountSidebar — видимость задаётся снаружи', 
 
     const hidden = (last as unknown as VisibilitySpec).hidden;
     expect([...hidden].sort((a, b) => a - b)).toEqual([id('src'), id('docs')].sort((a, b) => a - b));
+  });
+});
+
+describe('mountSidebar — поиск', () => {
+  it('ввод отдаёт образец наружу', () => {
+    const root = document.createElement('div');
+    document.body.append(root);
+    let last: string | null = null;
+    mountSidebar(root, {
+      pack,
+      onFilter: () => {},
+      onVisibility: () => {},
+      onSearch: (query) => (last = query),
+    });
+
+    const field = root.querySelector<HTMLInputElement>('input[data-role="search"]')!;
+    field.value = 'utils';
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    expect(last).toBe('utils');
+  });
+
+  it('Enter отдаёт образец вторым колбэком, а не первым', () => {
+    const root = document.createElement('div');
+    document.body.append(root);
+    let onSearchCalls = 0;
+    let submitted: string | null = null;
+    mountSidebar(root, {
+      pack,
+      onFilter: () => {},
+      onVisibility: () => {},
+      onSearch: () => onSearchCalls++,
+      onSearchSubmit: (query) => (submitted = query),
+    });
+
+    const field = root.querySelector<HTMLInputElement>('input[data-role="search"]')!;
+    field.value = 'utils';
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    field.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+
+    expect(submitted).toBe('utils');
+    // Enter не должен ещё раз позвать onSearch — только onSearchSubmit.
+    expect(onSearchCalls).toBe(1);
+  });
+
+  it('setSearchCount пишет обе формы строки счётчика', () => {
+    const root = document.createElement('div');
+    document.body.append(root);
+    const handles = mountSidebar(root, { pack, onFilter: () => {}, onVisibility: () => {} });
+
+    handles.setSearchCount(3, 'utils');
+    const counter = root.querySelector('[data-role="search-count"]')!;
+    expect(counter.textContent).toBe('совпадений: 3 · Enter — показать первое');
+
+    handles.setSearchCount(0, 'ничего-такого');
+    expect(counter.textContent).toBe('ничего не найдено');
+
+    handles.setSearchCount(0, '');
+    expect(counter.textContent).toBe('');
+  });
+
+  it('поле поиска связано с заголовком секции', () => {
+    const root = document.createElement('div');
+    document.body.append(root);
+    mountSidebar(root, { pack, onFilter: () => {}, onVisibility: () => {} });
+
+    const field = root.querySelector<HTMLInputElement>('input[data-role="search"]')!;
+    const labelledBy = field.getAttribute('aria-labelledby');
+    expect(labelledBy).toBeTruthy();
+    expect(document.getElementById(labelledBy!)?.textContent).toBe('Поиск');
+  });
+
+  it('секция «Поиск» стоит первой в панели', () => {
+    const root = document.createElement('div');
+    document.body.append(root);
+    mountSidebar(root, { pack, onFilter: () => {}, onVisibility: () => {} });
+
+    const headings = [...root.querySelectorAll('h2')].map((h) => h.textContent);
+    expect(headings[0]).toBe('Поиск');
+  });
+
+  it('"/" из документа фокусирует поле поиска и подавляет ввод символа', () => {
+    const root = document.createElement('div');
+    document.body.append(root);
+    mountSidebar(root, { pack, onFilter: () => {}, onVisibility: () => {} });
+
+    const field = root.querySelector<HTMLInputElement>('input[data-role="search"]')!;
+    const event = new KeyboardEvent('keydown', { key: '/', bubbles: true, cancelable: true });
+    document.body.dispatchEvent(event);
+
+    expect(document.activeElement).toBe(field);
+    expect(event.defaultPrevented).toBe(true);
+  });
+
+  it('"/" со Shift тоже фокусирует поле: на некоторых раскладках это единственный способ набрать слэш', () => {
+    const root = document.createElement('div');
+    document.body.append(root);
+    mountSidebar(root, { pack, onFilter: () => {}, onVisibility: () => {} });
+
+    const field = root.querySelector<HTMLInputElement>('input[data-role="search"]')!;
+    const event = new KeyboardEvent('keydown', {
+      key: '/',
+      shiftKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    document.body.dispatchEvent(event);
+
+    expect(document.activeElement).toBe(field);
+    expect(event.defaultPrevented).toBe(true);
+  });
+
+  it('счётчик совпадений озвучивается ассистивными технологиями', () => {
+    const root = document.createElement('div');
+    document.body.append(root);
+    mountSidebar(root, { pack, onFilter: () => {}, onVisibility: () => {} });
+
+    const counter = root.querySelector('[data-role="search-count"]')!;
+    // aria-live один — без него смена текста по мере набора и подсказка про
+    // Enter не дошли бы до пользователя скринридера.
+    expect(counter.getAttribute('aria-live')).toBe('polite');
+    expect(counter.getAttribute('role')).toBe('status');
+  });
+
+  it('"/" внутри текстового поля не перехватывается глобальным обработчиком', () => {
+    const root = document.createElement('div');
+    document.body.append(root);
+    mountSidebar(root, { pack, onFilter: () => {}, onVisibility: () => {} });
+
+    const pathField = root.querySelector<HTMLInputElement>('input[data-role="path"]')!;
+    pathField.focus();
+    const event = new KeyboardEvent('keydown', { key: '/', bubbles: true, cancelable: true });
+    pathField.dispatchEvent(event);
+
+    // Событие не подавлено: поле само вправе получить символ "/".
+    expect(event.defaultPrevented).toBe(false);
+  });
+
+  it('снимает глобальный обработчик "/" при размонтировании', () => {
+    const root = document.createElement('div');
+    document.body.append(root);
+    const handles = mountSidebar(root, { pack, onFilter: () => {}, onVisibility: () => {} });
+    handles.unmount();
+
+    const event = new KeyboardEvent('keydown', { key: '/', bubbles: true, cancelable: true });
+    document.body.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(false);
   });
 });

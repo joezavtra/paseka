@@ -1,5 +1,5 @@
 import type { Camera } from './camera.js';
-import { PALETTE } from './palette.js';
+import { PALETTE, SCENE_BACKGROUND } from './palette.js';
 
 /**
  * Лучи от авторов к задетым файлам. Оба конца — уже мировые координаты, а не
@@ -31,6 +31,24 @@ export interface ActorLayer {
   name: string[];
 }
 
+/**
+ * Подписи узлов: параллельные массивы, длина значима до `count`. Отбор — чей
+ * путь сюда попал и в каком порядке — решает `selectLabels` (web/render/labels.ts);
+ * отрисовке остаётся только положить готовый текст рядом с узлом, а не
+ * собирать его на лету — иначе правило «показывать ли счётчик файлов»
+ * задваивалось бы между сборкой сцены и кадром.
+ *
+ * Порядок в слое — по убыванию важности (первым идёт наведённый), поэтому
+ * рисуется он с конца: холст кладёт следующий текст поверх предыдущего, и при
+ * прямом обходе самая важная подпись оказывалась бы закрашена всеми
+ * остальными. Наведение — жест, ответ на который закрашивать нельзя.
+ */
+export interface LabelLayer {
+  count: number;
+  path: Uint32Array;
+  text: string[];
+}
+
 export interface SceneInput {
   /** Рисуемая маска; индекс — идентификатор пути. Не то же самое, что живость: скрытый или свёрнутый живой путь сюда не входит. */
   active: Uint8Array;
@@ -52,14 +70,39 @@ export interface SceneInput {
   linkTarget: Uint32Array;
   /** Свечение узла от недавнего касания: 0 — нет, 1 — только что задет. */
   flash: Float32Array;
+  /**
+   * Найденное поиском; индекс — идентификатор пути. Отдельная ось от alpha:
+   * фильтр гасит непопавшее, поиск обводит попавшее, и одно не отменяет
+   * другого.
+   */
+  hit: Uint8Array;
+  /**
+   * Сколько единиц в `hit`; считается той же проекцией попаданий, что и сама
+   * маска (web/state/search.ts), поэтому разойтись им неоткуда. Ноль означает
+   * «обводить нечего» — и слой обводки выходит на этом сразу, не обходя все
+   * пути кадра. Самый частый случай — поиск не используется вовсе, и платить
+   * за него полным проходом было бы неправильно.
+   */
+  hitCount: number;
   beams: BeamLayer;
   actors: ActorLayer;
+  labels: LabelLayer;
 }
 
 /** Насколько узел раздувается на вспышке. */
 const FLASH_GROWTH = 0.6;
 /** Доля длины луча, на которую он отводится в сторону от прямой. */
 const BEAM_BOW = 0.18;
+/**
+ * Пол читаемости подписи: яркость текста не опускается ниже этого значения,
+ * даже когда узел сильно погашен фильтром. Численно совпадает с
+ * `DIMMED_ALPHA_THRESHOLD` из web/render/labels.ts, но это разные величины —
+ * та решает, подписывать ли узел вообще, эта — насколько ярко рисовать уже
+ * выбранную подпись. Совпадение чисел не повод сводить их к одной константе.
+ */
+const MIN_LABEL_ALPHA = 0.5;
+/** Зазор между краем узла и его подписью, в экранных пикселях. */
+const LABEL_GAP_PX = 4;
 
 /** Радиус узла с учётом свечения от недавнего касания. */
 export function flashRadius(radius: number, flash: number): number {
@@ -167,6 +210,31 @@ export function drawScene(
     ctx.globalAlpha = 1;
   }
 
+  // Кольцо рисуется своей яркостью, а не яркостью узла: это единственный слой,
+  // который сознательно не умножается на альфу фильтра. Найденный файл в
+  // погашенной ветке обязан остаться погашенным — фильтр поиском не
+  // отменяется, — но если погасить и кольцо, поиск по отфильтрованному дереву
+  // не найдёт ничего видимого.
+  //
+  // Счётчик найденного спрашивается до обхода: без поиска (а это самый частый
+  // случай за сеанс) слой не стоит вообще ничего, вместо прохода по всем путям
+  // ради маски, в которой заведомо нет ни одной единицы.
+  if (input.hitCount > 0) {
+    ctx.globalAlpha = 0.9;
+    ctx.strokeStyle = '#f0f6fc';
+    ctx.lineWidth = 2;
+    for (let path = 0; path < input.active.length; path++) {
+      if (input.active[path] === 0 || input.hit[path] !== 1) continue;
+      const [sx, sy] = camera.toScreen(input.positions[path * 2]!, input.positions[path * 2 + 1]!);
+      const r = flashRadius(input.radius[path]!, input.flash[path]!) * camera.scale + 3;
+      if (sx + r < 0 || sy + r < 0 || sx - r > width || sy - r > height) continue;
+      ctx.beginPath();
+      ctx.arc(sx, sy, Math.max(2, r), 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+  }
+
   ctx.lineWidth = 1.4;
   for (let i = 0; i < input.beams.count; i++) {
     const [ax, ay] = camera.toScreen(input.beams.fromX[i]!, input.beams.fromY[i]!);
@@ -204,7 +272,7 @@ export function drawScene(
     ctx.arc(sx, sy, 11, 0, Math.PI * 2);
     ctx.fill();
 
-    ctx.fillStyle = '#0b0d12';
+    ctx.fillStyle = SCENE_BACKGROUND;
     ctx.fillText(input.actors.initials[author] ?? '?', sx, sy + 0.5);
 
     ctx.textAlign = 'left';
@@ -212,6 +280,39 @@ export function drawScene(
     ctx.fillText(input.actors.name[author] ?? '', sx + 15, sy + 0.5);
     ctx.textAlign = 'center';
   }
+
+  // Подписи — последний слой (§11: рёбра → узлы → лучи → значки → подписи):
+  // текст должен лежать поверх всего остального, иначе его перекроют более
+  // ранние слои. Кто подписан и каким текстом решает selectLabels заранее —
+  // здесь только отрисовка готового слоя, без сборки текста на лету.
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.font = '11px ui-sans-serif, system-ui, sans-serif';
+  // Слой обходится с конца: он упорядочен по убыванию важности, а холст кладёт
+  // каждый следующий текст поверх предыдущего (см. докблок LabelLayer).
+  for (let i = input.labels.count - 1; i >= 0; i--) {
+    const path = input.labels.path[i]!;
+    const [sx, sy] = camera.toScreen(input.positions[path * 2]!, input.positions[path * 2 + 1]!);
+    const r = flashRadius(input.radius[path]!, input.flash[path]!) * camera.scale;
+    // Та же отсечка по bbox узла, что и у остальных слоёв: подпись всё равно
+    // держится вплотную к своему узлу, и если узел за кадром, то и она.
+    if (sx + r < 0 || sy + r < 0 || sx - r > width || sy - r > height) continue;
+    // Яркость подписи — яркость узла, но не ниже MIN_LABEL_ALPHA: иначе
+    // подпись наведённого узла в погашенной фильтром ветке была бы нечитаема,
+    // а именно наведённый узел — тот случай, где молчать нельзя (см. labels.ts).
+    ctx.globalAlpha = Math.max(MIN_LABEL_ALPHA, input.alpha[path]!);
+    ctx.fillStyle = '#c9d1d9';
+    const text = input.labels.text[i] ?? '';
+    // Подпись стоит справа от узла, но у правого края окна она уезжала за кадр
+    // и обрезалась: отсечка выше знает только габарит узла, а текст рисуется
+    // правее него и имеет собственную ширину. Не помещается справа — кладём
+    // слева от узла: подпись остаётся при своём узле и целиком видна.
+    const rightX = sx + r + LABEL_GAP_PX;
+    const textWidth = ctx.measureText(text).width;
+    const x = rightX + textWidth <= width ? rightX : sx - r - LABEL_GAP_PX - textWidth;
+    ctx.fillText(text, x, sy);
+  }
+  ctx.globalAlpha = 1;
 
   ctx.restore();
 }

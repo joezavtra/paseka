@@ -14,6 +14,9 @@ const STATE_KEYS = [
   'textBaseline',
 ] as const;
 
+/** Ширина символа в заглушке замера текста; см. measureText ниже. */
+const CHAR_WIDTH_PX = 7;
+
 interface Stub {
   ctx: CanvasRenderingContext2D;
   /** Кисть на каждом fill(). */
@@ -22,8 +25,8 @@ interface Stub {
   fillAlpha: number[];
   /** Кисть на каждом stroke(). */
   strokes: string[];
-  /** Написанный текст вместе с кистью и местом. */
-  texts: { text: string; x: number; y: number; fill: string }[];
+  /** Написанный текст вместе с кистью, местом и прозрачностью. */
+  texts: { text: string; x: number; y: number; fill: string; alpha: number }[];
   /** Конец каждой квадратичной кривой: сюда бьёт луч. */
   curves: { cx: number; cy: number; x: number; y: number }[];
   /** Прозрачность на каждом stroke(): по ней видно затухание луча. */
@@ -42,7 +45,7 @@ function stubContext(): Stub {
   const fillAlpha: number[] = [];
   const strokes: string[] = [];
   const strokeAlpha: number[] = [];
-  const texts: { text: string; x: number; y: number; fill: string }[] = [];
+  const texts: { text: string; x: number; y: number; fill: string; alpha: number }[] = [];
   const curves: { cx: number; cy: number; x: number; y: number }[] = [];
   const stack: Record<string, unknown>[] = [];
 
@@ -71,7 +74,14 @@ function stubContext(): Stub {
       fillAlpha.push(Number(ctx.globalAlpha));
     },
     fillText(text: string, x: number, y: number) {
-      texts.push({ text, x, y, fill: String(ctx.fillStyle) });
+      texts.push({ text, x, y, fill: String(ctx.fillStyle), alpha: Number(ctx.globalAlpha) });
+    },
+    // Ширина текста — единственное, ради чего отрисовке нужен замер: по ней
+    // решается, помещается ли подпись справа от узла. Заглушка считает по
+    // фиксированной ширине символа: настоящие метрики шрифта в узле недоступны,
+    // а тесту нужна не типографика, а предсказуемое число.
+    measureText(text: string) {
+      return { width: text.length * CHAR_WIDTH_PX };
     },
     save() {
       const bag = ctx as unknown as Record<string, unknown>;
@@ -114,6 +124,8 @@ function sceneWithTwoNodes(): SceneInput {
     linkSource: Uint32Array.from([0]),
     linkTarget: Uint32Array.from([1]),
     flash: new Float32Array(2),
+    hit: new Uint8Array(2),
+    hitCount: 0,
     beams: {
       count: 0,
       fromX: new Float32Array(2),
@@ -130,6 +142,11 @@ function sceneWithTwoNodes(): SceneInput {
       color: ['#111111', '#222222'],
       initials: ['АП', 'БЛ'],
       name: ['Аня Петрова', 'Бо Ли'],
+    },
+    labels: {
+      count: 0,
+      path: new Uint32Array(2),
+      text: [],
     },
   };
 }
@@ -276,6 +293,61 @@ describe('drawScene', () => {
     expect(strokeAlpha[2]!).toBeCloseTo(strokeAlpha[1]! * 0.12, 5);
   });
 
+  it('обводит только узлы с hit === 1', () => {
+    const { ctx, strokes } = stubContext();
+    const input = sceneWithTwoNodes();
+    input.hit[0] = 1;
+    input.hitCount = 1;
+
+    drawScene(ctx, new Camera(), input, 800, 600);
+
+    // Первый stroke — ребро дерева, второй — кольцо обводки узла 0.
+    expect(strokes).toEqual(['#2a3140', '#f0f6fc']);
+  });
+
+  it('не обводит узел, не рисуемый на сцене', () => {
+    const { ctx, strokes } = stubContext();
+    const input = sceneWithTwoNodes();
+    input.hit[0] = 1;
+    input.hitCount = 1;
+    input.active[0] = 0;
+
+    drawScene(ctx, new Camera(), input, 800, 600);
+
+    expect(strokes).not.toContain('#f0f6fc');
+  });
+
+  it('яркость кольца не падает вместе с альфой узла', () => {
+    const { ctx, strokes, strokeAlpha } = stubContext();
+    const input = sceneWithTwoNodes();
+    input.hit[0] = 1;
+    input.hitCount = 1;
+    input.alpha[0] = 0.05; // узел почти погашен фильтром
+
+    drawScene(ctx, new Camera(), input, 800, 600);
+
+    const ringIndex = strokes.indexOf('#f0f6fc');
+    expect(ringIndex).toBeGreaterThan(-1);
+    // Кольцо рисуется своей постоянной яркостью, а не яркостью погашенного узла.
+    expect(strokeAlpha[ringIndex]!).toBeCloseTo(0.9, 5);
+  });
+
+  it('при нулевом счётчике совпадений слой обводки не рисуется вовсе', () => {
+    const { ctx, strokes } = stubContext();
+    const input = sceneWithTwoNodes();
+    // Держатель числа совпадений — проекция попаданий (web/state/search.ts),
+    // она же заполняет и маску. Ноль означает «обводить нечего», и слой
+    // выходит на этом сразу, не обходя все пути кадра ради маски, в которой
+    // заведомо нет единиц. Маска здесь намеренно противоречит счётчику: так
+    // видно, что спрашивают именно счётчик.
+    input.hit[0] = 1;
+    input.hitCount = 0;
+
+    drawScene(ctx, new Camera(), input, 800, 600);
+
+    expect(strokes).not.toContain('#f0f6fc');
+  });
+
   it('рисует значок автора: кружок его цветом, инициалы и имя рядом', () => {
     const { ctx, fills, texts } = stubContext();
     const input = sceneWithTwoNodes();
@@ -297,6 +369,136 @@ describe('drawScene', () => {
     const { ctx, texts } = stubContext();
     drawScene(ctx, new Camera(), sceneWithTwoNodes(), 800, 600);
     expect(texts).toEqual([]);
+  });
+
+  it('рисует подпись для перечисленных в слое путей и только для них', () => {
+    const { ctx, texts } = stubContext();
+    const input = sceneWithTwoNodes();
+    input.labels = {
+      count: 1,
+      path: Uint32Array.from([1, 0]),
+      text: ['b.ts · 3 файла'],
+    };
+
+    drawScene(ctx, new Camera(), input, 800, 600);
+
+    expect(texts).toHaveLength(1);
+    expect(texts[0]!.text).toBe('b.ts · 3 файла');
+  });
+
+  it('текст подписи берётся из слоя, а не собирается отрисовкой', () => {
+    const { ctx, texts } = stubContext();
+    const input = sceneWithTwoNodes();
+    // Путь 0 в дереве называется иначе, чем текст в слое: если бы отрисовка
+    // собирала подпись сама, совпадения бы не случилось.
+    input.labels = { count: 1, path: Uint32Array.from([0]), text: ['совсем другой текст'] };
+
+    drawScene(ctx, new Camera(), input, 800, 600);
+
+    expect(texts.map((t) => t.text)).toEqual(['совсем другой текст']);
+  });
+
+  it('подпись сдвинута вправо от узла на его экранный радиус плюс 4px', () => {
+    const { ctx, texts } = stubContext();
+    const input = sceneWithTwoNodes();
+    // Узел 0 стоит в мировом (0, 0) с радиусом 3 — при единичном масштабе и
+    // нулевом смещении камеры экранные координаты совпадают с мировыми.
+    input.labels = { count: 1, path: Uint32Array.from([0]), text: ['x'] };
+
+    drawScene(ctx, new Camera(), input, 800, 600);
+
+    expect(texts[0]!.x).toBeCloseTo(0 + 3 + 4, 5);
+    expect(texts[0]!.y).toBeCloseTo(0, 5);
+  });
+
+  it('яркость подписи — яркость узла, но не ниже 0.5', () => {
+    const { ctx, texts } = stubContext();
+    const input = sceneWithTwoNodes();
+    input.alpha[0] = 0.1; // сильно погашен фильтром
+    input.labels = { count: 1, path: Uint32Array.from([0]), text: ['x'] };
+
+    drawScene(ctx, new Camera(), input, 800, 600);
+
+    expect(texts).toHaveLength(1);
+    expect(texts[0]!.alpha).toBeCloseTo(0.5, 5);
+  });
+
+  it('яркость подписи следует за яркостью узла выше порога 0.5', () => {
+    const { ctx, texts } = stubContext();
+    const input = sceneWithTwoNodes();
+    input.alpha[0] = 0.8;
+    input.labels = { count: 1, path: Uint32Array.from([0]), text: ['x'] };
+
+    drawScene(ctx, new Camera(), input, 800, 600);
+
+    expect(texts[0]!.alpha).toBeCloseTo(0.8, 5);
+  });
+
+  it('подпись рисуется поверх всего: после узлов, лучей и значков', () => {
+    const { ctx, texts } = stubContext();
+    const input = sceneWithTwoNodes();
+    input.beams.count = 1;
+    input.beams.author[0] = 0;
+    input.actors.active[1] = 1;
+    input.labels = { count: 1, path: Uint32Array.from([0]), text: ['подпись'] };
+
+    drawScene(ctx, new Camera(), input, 800, 600);
+
+    // Последний написанный текст — подпись узла, а не значок автора.
+    expect(texts[texts.length - 1]!.text).toBe('подпись');
+  });
+
+  it('подпись, не помещающаяся справа, уходит влево от узла и остаётся в кадре', () => {
+    const { ctx, texts } = stubContext();
+    const input = sceneWithTwoNodes();
+    // Узел стоит у самого правого края холста: справа от него текста ширины
+    // «длинное имя файла» уже не поместится. Прежде подпись рисовалась там
+    // всё равно и уезжала за край обрезанной — отсечка выше знает только
+    // габарит узла, а текст имеет собственную ширину.
+    const width = 800;
+    const text = 'очень-длинное-имя.ts';
+    input.positions[0] = width - 10;
+    input.positions[1] = 300;
+    input.labels = { count: 1, path: Uint32Array.from([0]), text: [text] };
+
+    drawScene(ctx, new Camera(), input, width, 600);
+
+    expect(texts).toHaveLength(1);
+    const drawn = texts[0]!;
+    expect(drawn.x).toBeLessThan(input.positions[0]!);
+    expect(drawn.x + text.length * CHAR_WIDTH_PX).toBeLessThanOrEqual(width);
+  });
+
+  it('подпись, помещающаяся справа, остаётся справа', () => {
+    const { ctx, texts } = stubContext();
+    const input = sceneWithTwoNodes();
+    // Тот же узел в середине холста: места справа вдоволь, и правило «слева,
+    // если не помещается» не должно срабатывать просто так.
+    input.positions[0] = 300;
+    input.positions[1] = 300;
+    input.labels = { count: 1, path: Uint32Array.from([0]), text: ['имя.ts'] };
+
+    drawScene(ctx, new Camera(), input, 800, 600);
+
+    expect(texts[0]!.x).toBeCloseTo(300 + 3 + 4, 5);
+  });
+
+  it('приоритетная подпись рисуется последней, чтобы лечь поверх остальных', () => {
+    const { ctx, texts } = stubContext();
+    const input = sceneWithTwoNodes();
+    // Слой упорядочен по убыванию важности (наведённый — первым, см.
+    // selectLabels), а холст кладёт каждый следующий текст поверх
+    // предыдущего: при прямом обходе ответ на наведение закрашивался бы всеми
+    // прочими подписями кадра.
+    input.labels = {
+      count: 2,
+      path: Uint32Array.from([0, 1]),
+      text: ['наведённый', 'случайный сосед'],
+    };
+
+    drawScene(ctx, new Camera(), input, 800, 600);
+
+    expect(texts.map((t) => t.text)).toEqual(['случайный сосед', 'наведённый']);
   });
 
   it('возвращает контекст в то состояние, в котором его взял', () => {

@@ -17,11 +17,20 @@ import type { FromWorker, ToWorker } from './protocol.js';
 let store: NodeStore | null = null;
 let simulation: Simulation<StoreNode, SimulationLinkDatum<StoreNode>> | null = null;
 let lastPost = 0;
+/**
+ * Номер последнего применённого `update`. Эхуется в каждом `positions`, чтобы
+ * главный поток мог отличить свежий ответ от тика симуляции, отправленного до
+ * того, как этот `update` был применён (см. `LayoutPositions.epoch`). Тики
+ * между двумя `update` несут один и тот же номер — это не «устаревание», а
+ * продолжающееся уточнение позиций в рамках уже известной главному потоку
+ * маски.
+ */
+let lastAppliedEpoch = 0;
 
 function post(alpha: number): void {
   if (!store) return;
   const positions = store.positions();
-  const message: FromWorker = { type: 'positions', positions, alpha };
+  const message: FromWorker = { type: 'positions', positions, alpha, epoch: lastAppliedEpoch };
   (self as unknown as Worker).postMessage(message, [positions.buffer]);
 }
 
@@ -31,6 +40,7 @@ self.onmessage = (event: MessageEvent<ToWorker>) => {
   if (message.type === 'init') {
     store = new NodeStore(message.pathCount, message.parent, message.seed);
     lastPost = 0;
+    lastAppliedEpoch = 0;
     simulation?.stop();
     simulation = null;
     return;
@@ -44,6 +54,9 @@ self.onmessage = (event: MessageEvent<ToWorker>) => {
     radiusIds: message.radiusIds,
     radiusValues: message.radiusValues,
   });
+  // До первого post() ниже: любой ответ с этого момента относится уже к
+  // этому update, а не к предыдущему.
+  lastAppliedEpoch = message.epoch;
 
   const byId = new Map<number, StoreNode>();
   for (const node of nodes) byId.set(node.id, node);

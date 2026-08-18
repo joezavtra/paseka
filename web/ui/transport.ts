@@ -1,5 +1,6 @@
 import type { Pack } from '../../src/model/types.js';
 import { bucketActivity, bucketCountForWidth, drawHistogram } from './histogram.js';
+import { ownsTextInput } from './keys.js';
 
 export interface TransportOptions {
   commitCount: number;
@@ -24,27 +25,26 @@ export interface TransportHandles {
 
 const SPEEDS = [0.5, 1, 2, 4, 8];
 
+/**
+ * Дата коммита в формате `YYYY-MM-DD` — единственное место в проекте, где эта
+ * строка считается. И подпись под слайдером, и карточка узла (см.
+ * `web/ui/inspector.ts`) показывают одну и ту же дату коммита в одном и том
+ * же формате; второй копии `toISOString().slice(0, 10)` в проекте быть не
+ * должно.
+ */
+export function commitDateLabel(pack: Pack, commit: number): string {
+  return new Date(pack.commitTs[commit]! * 1000).toISOString().slice(0, 10);
+}
+
 /** Подпись под курсором: дата, короткий хэш и тема коммита. */
 export function formatCommitLabel(pack: Pack, index: number): string {
   if (index < 0) return 'до начала истории';
   const clamped = Math.min(index, pack.meta.commitCount - 1);
   if (clamped < 0) return 'до начала истории';
-  const date = new Date(pack.commitTs[clamped]! * 1000).toISOString().slice(0, 10);
+  const date = commitDateLabel(pack, clamped);
   const subject = pack.commitSubject[clamped] ?? '';
   const hash = (pack.commitHash[clamped] ?? '').slice(0, 7);
   return subject.length > 0 ? `${date} · ${hash} · ${subject}` : `${date} · ${hash}`;
-}
-
-/**
- * Есть ли у пробела на этом элементе собственное поведение (открыть список,
- * вставить символ, переключиться в редактируемой области) — тогда глобальную
- * горячую клавишу воспроизведения нужно пропустить и отдать пробел элементу.
- */
-function ownsSpaceKey(target: EventTarget | null): boolean {
-  if (!(target instanceof HTMLElement)) return false;
-  const tag = target.tagName;
-  if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return true;
-  return target.isContentEditable;
 }
 
 export function mountTransport(root: HTMLElement, options: TransportOptions): TransportHandles {
@@ -107,7 +107,7 @@ export function mountTransport(root: HTMLElement, options: TransportOptions): Tr
 
   const handleKeydown = (event: KeyboardEvent): void => {
     if (event.code !== 'Space') return;
-    if (ownsSpaceKey(event.target)) return;
+    if (ownsTextInput(event.target)) return;
     event.preventDefault();
     options.onTogglePlay();
   };

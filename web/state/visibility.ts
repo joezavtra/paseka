@@ -17,6 +17,8 @@ export interface VisibilityResult {
   drawn: Uint8Array;
   /** Размер узла в строках; у свёрнутой папки — сумма живых потомков. */
   sizes: Int32Array;
+  /** Сколько живых файлов представляет узел: у свёрнутой папки — всё, что внутри. */
+  files: Int32Array;
 }
 
 /**
@@ -38,6 +40,7 @@ export function resolveVisibility(
   const representative = new Int32Array(pathCount);
   const drawn = new Uint8Array(pathCount);
   const result = new Int32Array(pathCount);
+  const files = new Int32Array(pathCount);
 
   if (pathCount > 0) {
     representative[0] = spec.hidden.has(0) ? HIDDEN : 0;
@@ -69,15 +72,21 @@ export function resolveVisibility(
   }
 
   // Размер свёрнутой папки — сумма живых потомков: узел должен выглядеть на
-  // столько, сколько кода в нём спрятано.
+  // столько, сколько кода в нём спрятано. Число файлов копится тем же
+  // проходом: подписи свёрнутой папки (§9) нужен именно счётчик файлов, а не
+  // строк, и заводить для него отдельный обход по тем же путям было бы
+  // двойной работой.
   for (let path = 0; path < pathCount; path++) {
     if (alive[path] !== 1) continue;
     const rep = representative[path];
     if (rep === HIDDEN) continue;
     result[rep] += sizes[path];
+    // Каталоги в счётчик не входят: пользователю нужно число файлов, а не
+    // число узлов поддерева.
+    if (pack.pathIsDir[path] !== 1) files[rep] += 1;
   }
 
-  return { representative, drawn, sizes: result };
+  return { representative, drawn, sizes: result, files };
 }
 
 /**
@@ -112,8 +121,10 @@ function pathsOf(pack: Pack, ids: ReadonlySet<number>): string[] {
 function idsOf(pack: Pack, value: unknown): Set<number> {
   const ids = new Set<number>();
   if (!Array.isArray(value)) return ids;
-  // Индекс строится один раз на разбор: путей десятки тысяч, а разбор бывает
-  // раз за загрузку страницы.
+  // Индекс строится заново на каждый вызов — decodeVisibility зовёт idsOf
+  // дважды (для hidden и для collapsed), так что на разбор пакета выходит два
+  // прохода. Это дёшево: путей десятки тысяч, а разбор бывает раз за загрузку
+  // страницы.
   const index = new Map<string, number>();
   for (let path = 0; path < pack.meta.pathCount; path++) index.set(pack.paths[path]!, path);
   for (const item of value) {

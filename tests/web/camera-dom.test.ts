@@ -15,11 +15,11 @@ afterEach(() => {
   document.body.replaceChildren();
 });
 
-function attached(): { camera: Camera; canvas: HTMLCanvasElement } {
+function attached(onManualControl?: () => void): { camera: Camera; canvas: HTMLCanvasElement } {
   const camera = new Camera();
   const canvas = document.createElement('canvas');
   document.body.append(canvas);
-  detach = camera.attach(canvas);
+  detach = camera.attach(canvas, onManualControl);
   return { camera, canvas };
 }
 
@@ -56,5 +56,52 @@ describe('Camera.attach — ручное управление отключает
     expect(camera.autoFit(Float32Array.from([-5, -5, 5, 5]), Uint8Array.from([1, 1]), 800, 600)).toBe(
       true,
     );
+  });
+});
+
+describe('Camera.attach — onManualControl', () => {
+  // Поиск (срез 5) вешает сюда снятие отложенного фокуса: жест пользователя
+  // должен перекрывать намерение, оставшееся от Enter, отправленного раньше.
+  it('зовётся на колесо', () => {
+    let calls = 0;
+    const { canvas } = attached(() => calls++);
+
+    canvas.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, cancelable: true }));
+
+    expect(calls).toBe(1);
+  });
+
+  it('зовётся на перетаскивание', () => {
+    let calls = 0;
+    const { canvas } = attached(() => calls++);
+
+    canvas.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 1, bubbles: true }));
+    canvas.dispatchEvent(new PointerEvent('pointermove', { pointerId: 1, bubbles: true }));
+    canvas.dispatchEvent(new PointerEvent('pointerup', { pointerId: 1, bubbles: true }));
+
+    expect(calls).toBe(1);
+  });
+
+  it('не зовётся на одиночный клик без перемещения (клик по узлу — не жест камерой)', () => {
+    let calls = 0;
+    const { canvas } = attached(() => calls++);
+
+    canvas.dispatchEvent(new PointerEvent('pointerdown', { pointerId: 1, bubbles: true }));
+    canvas.dispatchEvent(new PointerEvent('pointerup', { pointerId: 1, bubbles: true }));
+
+    expect(calls).toBe(0);
+  });
+
+  it('не зовётся до всякого взаимодействия', () => {
+    let calls = 0;
+    attached(() => calls++);
+    expect(calls).toBe(0);
+  });
+
+  it('необязателен: attach без колбэка не падает на тех же жестах', () => {
+    const { canvas } = attached();
+    expect(() => {
+      canvas.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, cancelable: true }));
+    }).not.toThrow();
   });
 });
