@@ -27,7 +27,7 @@ export interface ActorLayer {
 }
 
 export interface SceneInput {
-  /** Маска живых узлов; индекс — идентификатор пути. */
+  /** Рисуемая маска; индекс — идентификатор пути. Не то же самое, что живость: скрытый или свёрнутый живой путь сюда не входит. */
   active: Uint8Array;
   /** Пары x, y в мировых координатах; индекс пары — идентификатор пути. */
   positions: Float32Array;
@@ -98,6 +98,11 @@ export function drawScene(
 
   ctx.strokeStyle = '#2a3140';
   ctx.lineWidth = Math.max(0.4, camera.scale * 0.35);
+  // Рёбер могут быть десятки тысяч, а различных альф среди них — единицы (в
+  // основном погашено/не погашено, до четырёх во время перехода фильтра).
+  // Группируем по округлённой альфе и на группу тратим один beginPath() и
+  // один stroke(), а не по паре на каждое ребро.
+  const edgeGroups = new Map<number, number[]>();
   for (let i = 0; i < input.linkSource.length; i++) {
     const source = input.linkSource[i]!;
     const target = input.linkTarget[i]!;
@@ -107,10 +112,30 @@ export function drawScene(
     if (edgeAlpha <= 0) continue;
     const [ax, ay] = camera.toScreen(input.positions[source * 2]!, input.positions[source * 2 + 1]!);
     const [bx, by] = camera.toScreen(input.positions[target * 2]!, input.positions[target * 2 + 1]!);
-    ctx.globalAlpha = edgeAlpha;
+    // Отсечение по bbox отрезка: та же экономия, что и у узлов ниже.
+    if (
+      Math.max(ax, bx) < 0 ||
+      Math.min(ax, bx) > width ||
+      Math.max(ay, by) < 0 ||
+      Math.min(ay, by) > height
+    ) {
+      continue;
+    }
+    const key = Math.round(edgeAlpha * 1000);
+    let group = edgeGroups.get(key);
+    if (!group) {
+      group = [];
+      edgeGroups.set(key, group);
+    }
+    group.push(ax, ay, bx, by);
+  }
+  for (const [key, coords] of edgeGroups) {
+    ctx.globalAlpha = key / 1000;
     ctx.beginPath();
-    ctx.moveTo(ax, ay);
-    ctx.lineTo(bx, by);
+    for (let i = 0; i < coords.length; i += 4) {
+      ctx.moveTo(coords[i]!, coords[i + 1]!);
+      ctx.lineTo(coords[i + 2]!, coords[i + 3]!);
+    }
     ctx.stroke();
   }
   ctx.globalAlpha = 1;

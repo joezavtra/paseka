@@ -212,6 +212,38 @@ describe('drawScene', () => {
     expect(strokeAlpha[0]).toBeCloseTo(0.12, 5);
   });
 
+  it('рисует все рёбра одной альфы одним контуром, а не по одному на ребро', () => {
+    const { ctx, strokes } = stubContext();
+    const input = sceneWithTwoNodes();
+    // Четыре узла в ряд, три ребра, все концы в полной альфе.
+    input.active = Uint8Array.from([1, 1, 1, 1]);
+    input.positions = Float32Array.from([0, 0, 10, 0, 20, 0, 30, 0]);
+    input.radius = Float32Array.from([3, 3, 3, 3]);
+    input.color = Uint8Array.from([DIR_COLOR_INDEX, DIR_COLOR_INDEX, DIR_COLOR_INDEX, DIR_COLOR_INDEX]);
+    input.alpha = new Float32Array(4).fill(1);
+    input.flash = new Float32Array(4);
+    input.linkSource = Uint32Array.from([0, 1, 2]);
+    input.linkTarget = Uint32Array.from([1, 2, 3]);
+
+    drawScene(ctx, new Camera(), input, 800, 600);
+
+    // Одна и та же альфа у всех трёх рёбер — один контур, один stroke().
+    expect(strokes.filter((style) => style === '#2a3140')).toHaveLength(1);
+  });
+
+  it('не рисует ребро, целиком лежащее за пределами видимой области', () => {
+    const { ctx, strokes } = stubContext();
+    const input = sceneWithTwoNodes();
+    input.linkSource = Uint32Array.from([0]);
+    input.linkTarget = Uint32Array.from([1]);
+    // Оба конца далеко за правым краем холста 800×600.
+    input.positions = Float32Array.from([10_000, 10_000, 10_050, 10_050]);
+
+    drawScene(ctx, new Camera(), input, 800, 600);
+
+    expect(strokes.filter((style) => style === '#2a3140')).toHaveLength(0);
+  });
+
   it('гасит луч по его силе', () => {
     const { ctx, strokeAlpha } = stubContext();
     const input = sceneWithTwoNodes();

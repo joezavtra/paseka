@@ -1,5 +1,6 @@
 import type { ActorTarget } from './actors.js';
 import type { RecentEvents } from '../time/recent.js';
+import { HIDDEN } from '../state/visibility.js';
 
 /** Свечение узла: путь и сила, с которой он подсвечен в этом кадре. */
 export interface ActivityFlash {
@@ -28,8 +29,9 @@ export interface ActivityFrame {
   targets: ActorTarget[];
 }
 
-/** Состояние сцены, из которого выводится кадр: маска живых и позиции узлов. */
+/** Состояние сцены, из которого выводится кадр: рисуемая маска и позиции узлов. */
 export interface ActivityScene {
+  /** Рисуемая маска; индекс — идентификатор пути. Не путать с живостью: скрытый или свёрнутый живой путь сюда не входит. */
   active: Uint8Array;
   positions: Float32Array;
   /** Кто представляет путь на экране; HIDDEN, если путь не показывается. */
@@ -77,7 +79,7 @@ export function deriveActivity(
     // жива и рисуется, а её содержимое — нет: событие внутри неё должно
     // попадать в саму папку, иначе луч уходил бы в невидимый узел.
     const target = scene.representative[path];
-    if (target < 0 || scene.active[target] !== 1) return;
+    if (target === HIDDEN || scene.active[target] !== 1) return;
     const x = scene.positions[target * 2]!;
     const y = scene.positions[target * 2 + 1]!;
 

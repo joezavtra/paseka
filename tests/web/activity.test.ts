@@ -186,15 +186,38 @@ describe('deriveActivity', () => {
     expect(frame.targets[0]!.x).toBe(10);
   });
 
-  it('событие скрытого пути не даёт ни луча, ни вспышки', () => {
+  it('событие скрытого пути не даёт ни луча, ни вспышки, даже если сам путь жив', () => {
     const recent = new RecentEvents(8, 1000, 2);
     recent.push(2, 0, 0);
     const frame = deriveActivity(
       recent,
       {
-        active: Uint8Array.from([1, 1, 0]),
+        // Путь 2 сам по себе жив (active[2] = 1) — старая проверка «жив ли
+        // сам путь», без представителя, здесь ошиблась бы и дала событие.
+        // Скрывает его именно представитель HIDDEN.
+        active: Uint8Array.from([1, 1, 1]),
         positions: Float32Array.from([0, 0, 10, 10, 20, 20]),
         representative: Int32Array.from([0, 1, -1]),
+      },
+      0,
+      8,
+    );
+    expect(frame.beams).toHaveLength(0);
+    expect(frame.flashes).toHaveLength(0);
+    expect(frame.targets).toHaveLength(0);
+  });
+
+  it('событие пути с мёртвым представителем не даёт ни луча, ни вспышки', () => {
+    const recent = new RecentEvents(8, 1000, 2);
+    recent.push(2, 0, 0);
+    const frame = deriveActivity(
+      recent,
+      {
+        // Путь 2 представлен путём 1, но сам представитель не рисуется
+        // (active[1] = 0) — например, свернулся между событием и кадром.
+        active: Uint8Array.from([1, 0, 1]),
+        positions: Float32Array.from([0, 0, 10, 10, 20, 20]),
+        representative: Int32Array.from([0, 1, 1]),
       },
       0,
       8,

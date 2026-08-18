@@ -1,6 +1,6 @@
 import { describePack, loadPack, showFatal } from './boot.js';
 import { TimeEngine, type TimeDelta } from './time/engine.js';
-import { buildActiveLinks, radiusFor } from './layout/graph.js';
+import { buildActiveLinks, diffBorn, radiusFor } from './layout/graph.js';
 import type { FromWorker, LayoutInit, LayoutUpdate } from './layout/protocol.js';
 import { Camera } from './render/camera.js';
 import { drawScene, type SceneInput } from './render/scene.js';
@@ -91,6 +91,12 @@ async function start(): Promise<void> {
   let alphaFrom: Float32Array = new Float32Array(pathCount).fill(1);
   let alphaTo: Float32Array = new Float32Array(pathCount).fill(1);
   let alphaStartedAt = -Infinity;
+  // Без своего признака завершения переход после t >= 1 либо считался бы
+  // каждый кадр заново (сравнение globalAlpha не годится — альфа общая на
+  // всю сцену), либо, при сравнении массивов по ссылке, копировал бы
+  // alphaTo в scene.alpha каждый кадр вечно: scene.alpha — один и тот же
+  // объект, а alphaTo — всегда другой, и по ссылке они никогда не совпадут.
+  let alphaSettled = true;
   /** Рисуемая маска прошлого применения: из её разницы берётся список рождающихся. */
   const prevDrawn = new Uint8Array(pathCount);
 
@@ -147,18 +153,42 @@ async function start(): Promise<void> {
 
   /**
    * Переносит разницу движка времени в сцену и в воркер.
-   * `full` обязателен после перемотки: `seek` не сообщает затронутые пути, а
-   * размеры при этом меняются у любого выжившего файла — без полного обхода
-   * радиусы остались бы от прежнего положения курсора.
+   *
+   * Два флага отвечают на два разных вопроса и намеренно не связаны:
+   * `fullRadius` — надо ли пересчитать радиусы всех рисуемых узлов, а не
+   * только затронутых разницей (обязателен после `seek`: он не сообщает
+   * затронутые пути, а размеры при этом меняются у любого выжившего файла —
+   * без полного обхода радиусы остались бы от прежнего положения курсора; и
+   * после смены видимости — она меняет `visibility.sizes` у путей, которых
+   * движок времени вообще не считает изменившимися).
+   * `rewound` — сдвинулся ли курсор по-настоящему. Только это должно гасить
+   * буфер недавних событий и поле авторов: их цели пересчитываются через
+   * представителя на каждом кадре и остаются валидными при смене видимости
+   * без сдвига курсора — так что смена видимости передаёт `fullRadius: true`,
+   * но `rewound: false`.
    */
-  function applyDelta(delta: TimeDelta, full = false): void {
+  function applyDelta(delta: TimeDelta, fullRadius = false, rewound = false): void {
     const visibility = resolveVisibility(pack, engine.alive, engine.sizes, visibilitySpec);
     scene.active.set(visibility.drawn);
     scene.representative = visibility.representative;
 
+    if (rewound) {
+      // Перемотка обязана погасить чужую активность: без этого буфер держал
+      // бы лучи прежнего момента, нацеленные на пути, которые в новой позиции
+      // либо мертвы, либо принадлежат совсем другому коммиту. Вместе с буфером
+      // забывается и поле авторов: его позиции относятся к прежнему месту
+      // истории, и значок полз бы к новой цели дольше, чем живёт луч.
+      recent.clear();
+      actorField.reset();
+    }
+
     const radiusIds: number[] = [];
     const radiusValues: number[] = [];
     const remember = (path: number) => {
+      // Радиус нерисуемого узла воркеру не нужен: тот его не заводит в
+      // симуляции, а отправка была бы ссылкой на узел, которого там нет —
+      // ровно то, что раньше происходило со скрытым путём.
+      if (scene.active[path] !== 1) return;
       // Округляем до float32: scene.radius хранит именно его, и без округления
       // сравнение «изменилось ли» было бы истинным всегда. Размер берём из
       // visibility.sizes, а не из engine.sizes: у свёрнутой папки он должен
@@ -169,30 +199,27 @@ async function start(): Promise<void> {
       radiusIds.push(path);
       radiusValues.push(next);
     };
-    if (full) {
-      // Перемотка обязана погасить чужую активность: без этого буфер держал
-      // бы лучи прежнего момента, нацеленные на пути, которые в новой позиции
-      // либо мертвы, либо принадлежат совсем другому коммиту. Вместе с буфером
-      // забывается и поле авторов: его позиции относятся к прежнему месту
-      // истории, и значок полз бы к новой цели дольше, чем живёт луч.
-      recent.clear();
-      actorField.reset();
+    if (fullRadius) {
       for (let path = 0; path < pathCount; path++) {
         if (scene.active[path] === 1) remember(path);
       }
     } else {
       for (const path of delta.added) remember(path);
-      for (const path of delta.touched) remember(path);
+      for (const path of delta.touched) {
+        remember(path);
+        // Изменившийся файл может лежать внутри свёрнутой папки: рисуется
+        // именно представитель, и его радиус обязан вырасти вместе с
+        // содержимым, а не только у самого файла, которого на экране нет.
+        const representative = scene.representative[path];
+        if (representative >= 0 && representative !== path) remember(representative);
+      }
     }
 
     // Разница движка отвечает на вопрос «что родилось в истории», а воркеру
     // нужен ответ на другой: «что появилось на сцене». С видимостью это уже не
     // одно и то же — развёрнутая папка выпускает наружу узлы, которые в истории
     // не менялись.
-    const born: number[] = [];
-    for (let path = 0; path < pathCount; path++) {
-      if (scene.active[path] === 1 && prevDrawn[path] === 0) born.push(path);
-    }
+    const born = diffBorn(prevDrawn, scene.active);
     prevDrawn.set(scene.active);
 
     // Пока воркер не прислал позиции нового узла, рисуем его у родителя, а не
@@ -216,7 +243,7 @@ async function start(): Promise<void> {
     const update: LayoutUpdate = {
       type: 'update',
       active: scene.active.slice(),
-      added: Uint32Array.from(born),
+      added: born,
       radiusIds: Uint32Array.from(radiusIds),
       radiusValues: Float32Array.from(radiusValues),
       linkSource: links.source,
@@ -224,10 +251,10 @@ async function start(): Promise<void> {
     };
     worker.postMessage(update);
 
-    // Лучи заводятся только на шаге воспроизведения. Перемотка приходит с
-    // full = true, и вспыхивать на ней нечему: пользователь не смотрит, как
-    // работали авторы, он ищет место в истории.
-    if (!full && engine.cursor >= 0) {
+    // Лучи заводятся только на шаге воспроизведения. Перемотка не двигает
+    // вспышки: пользователь не смотрит, как работали авторы, он ищет место в
+    // истории.
+    if (!rewound && engine.cursor >= 0) {
       const author = pack.commitAuthor[engine.cursor]!;
       const now = performance.now();
       for (const path of delta.touched) recent.push(path, author, now);
@@ -257,13 +284,13 @@ async function start(): Promise<void> {
         onSeek: (index: number) => {
           playback.pause();
           playback.reset();
-          applyDelta(engine.seek(index), true);
+          applyDelta(engine.seek(index), true, true);
           syncTransport();
         },
         onTogglePlay: () => {
           // С конца истории воспроизведение начинается заново с начала.
           if (!playback.playing && engine.cursor >= pack.meta.commitCount - 1) {
-            applyDelta(engine.seek(-1), true);
+            applyDelta(engine.seek(-1), true, true);
           }
           playback.toggle();
           syncTransport();
@@ -282,11 +309,12 @@ async function start(): Promise<void> {
   /**
    * Применяет новую спецификацию видимости: она убирает узлы из симуляции и
    * раскладки, поэтому нужен полный пересчёт от текущего курсора, а не
-   * инкрементальная разница.
+   * инкрементальная разница. Курсор при этом не двигается — `rewound: false`,
+   * иначе буфер лучей и поле авторов стирались бы на каждый клик по панели.
    */
   function applyVisibility(next: VisibilitySpec): void {
     visibilitySpec = next;
-    applyDelta(engine.seek(engine.cursor), true);
+    applyDelta(engine.seek(engine.cursor), true, false);
   }
 
   /**
@@ -298,9 +326,10 @@ async function start(): Promise<void> {
     alphaFrom = scene.alpha.slice();
     alphaTo = computeAlpha(pack, filterSpec);
     alphaStartedAt = nowMs;
+    alphaSettled = false;
   }
 
-  applyDelta(engine.seek(pack.meta.commitCount - 1), true);
+  applyDelta(engine.seek(pack.meta.commitCount - 1), true, true);
   syncTransport();
 
   const resize = () => {
@@ -364,15 +393,20 @@ async function start(): Promise<void> {
         renderStatus();
       }
 
-      // Переход яркости фильтра: считаем каждый кадр, пока не доехали до цели,
-      // иначе смена фильтра переключала бы дерево резким миганием.
-      const t = Math.min(1, (nowMs - alphaStartedAt) / ALPHA_TRANSITION_MS);
-      if (t < 1) {
-        for (let path = 0; path < pathCount; path++) {
-          scene.alpha[path] = alphaFrom[path]! + (alphaTo[path]! - alphaFrom[path]!) * t;
+      // Переход яркости фильтра: считаем, только пока он не завершён — иначе
+      // смена фильтра переключала бы дерево резким миганием, а без признака
+      // завершения полная копия alphaTo в scene.alpha выполнялась бы каждый
+      // кадр вечно, даже когда фильтра нет вовсе.
+      if (!alphaSettled) {
+        const t = Math.min(1, (nowMs - alphaStartedAt) / ALPHA_TRANSITION_MS);
+        if (t < 1) {
+          for (let path = 0; path < pathCount; path++) {
+            scene.alpha[path] = alphaFrom[path]! + (alphaTo[path]! - alphaFrom[path]!) * t;
+          }
+        } else {
+          scene.alpha.set(alphaTo);
+          alphaSettled = true;
         }
-      } else if (scene.alpha !== alphaTo) {
-        scene.alpha.set(alphaTo);
       }
 
       drawScene(ctx, camera, scene, canvas.clientWidth, canvas.clientHeight);
