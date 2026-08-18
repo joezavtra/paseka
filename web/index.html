@@ -61,11 +61,24 @@
       .tree-row button { width: 18px; padding: 0; background: none; border: none;
         color: #8b949e; cursor: pointer; font: inherit; }
       .tree-children { margin-left: 14px; }
+      #inspector { position: fixed; right: 12px; top: 12px; width: 300px; max-height: 70vh;
+        overflow: auto; padding: 10px 12px; background: #161b22e6;
+        border: 1px solid #30363d; border-radius: 8px; }
+      #inspector[hidden] { display: none; }
+      #inspector h2 { margin: 0; font-size: 14px; }
+      #inspector .path { color: #8b949e; overflow-wrap: anywhere; margin: 2px 0 8px; }
+      #inspector .row { display: flex; align-items: center; gap: 6px; padding: 1px 0; }
+      #inspector .dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+      #inspector canvas { width: 100%; height: 28px; display: block; margin: 6px 0; }
+      #inspector .commit { color: #8b949e; overflow-wrap: anywhere; }
+      #inspector .close { position: absolute; right: 8px; top: 6px; background: none;
+        border: none; color: #8b949e; cursor: pointer; font: inherit; }
     </style>
   </head>
   <body>
     <canvas id="scene"></canvas>
     <aside id="sidebar" hidden></aside>
+    <aside id="inspector" hidden></aside>
     <div id="hud">
       <div id="status">Читаю историю репозитория…</div>
       <div id="transport" hidden></div>

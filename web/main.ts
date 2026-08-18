@@ -6,9 +6,12 @@ import { Camera } from './render/camera.js';
 import { drawScene, type SceneInput } from './render/scene.js';
 import { DIR_COLOR_INDEX, paletteIndexForPath } from './render/palette.js';
 import { deriveActivity } from './render/activity.js';
+import { NOTHING, pickNode } from './render/pick.js';
 import { Playback } from './time/playback.js';
 import { formatCommitLabel, mountTransport } from './ui/transport.js';
 import { mountSidebar } from './ui/sidebar.js';
+import { mountInspector } from './ui/inspector.js';
+import { describeNode } from './state/node-info.js';
 import type { Pack } from '../src/model/types.js';
 import { RecentEvents } from './time/recent.js';
 import { ActorField } from './render/actors.js';
@@ -112,20 +115,21 @@ async function start(): Promise<void> {
 
   const hud = document.getElementById('hud');
   const sidebarRoot = document.getElementById('sidebar');
+  const inspectorRoot = document.getElementById('inspector');
 
   /**
-   * Вписывает живые узлы, пока камерой не завладел пользователь. Обе полосы,
-   * занятые интерфейсом, из вида вычитаются: и HUD снизу (строка состояния и
-   * панель транспорта), и боковая панель слева. Оба слоя лежат поверх холста
-   * и почти непрозрачны, поэтому вписывание во всё окно прятало бы под ними
-   * края дерева — а достать их можно было бы только ручным панорамированием,
-   * которое навсегда выключает автовписывание.
+   * Вписывает живые узлы, пока камерой не завладел пользователь. Все полосы,
+   * занятые интерфейсом, из вида вычитаются: HUD снизу (строка состояния и
+   * панель транспорта), панель фильтров слева и карточка узла справа. Все
+   * слои лежат поверх холста и почти непрозрачны, поэтому вписывание во всё
+   * окно прятало бы под ними края дерева — а достать их можно было бы только
+   * ручным панорамированием, которое навсегда выключает автовписывание.
    *
-   * Слева, в отличие от низа, мало вычесть ширину: отсчёт идёт от левого края,
-   * и облако, вписанное в суженный прямоугольник, всё равно центрировалось бы
-   * поверх панели. Поэтому та же величина уходит во вписывание ещё и
-   * смещением. Панели может не быть в разметке или она может быть скрыта —
-   * тогда полоса нулевая, и вписывание работает как раньше.
+   * Слева, в отличие от низа и от правого края, мало вычесть ширину: отсчёт
+   * идёт от левого края, и облако, вписанное в суженный прямоугольник, всё
+   * равно центрировалось бы поверх панели. Поэтому та же величина уходит во
+   * вписывание ещё и смещением. Панели может не быть в разметке или она может
+   * быть скрыта — тогда полоса нулевая, и вписывание работает как раньше.
    */
   const reservedLeft = (): number => {
     if (!sidebarRoot || sidebarRoot.hidden) return 0;
@@ -136,10 +140,24 @@ async function start(): Promise<void> {
     return box.right + 12;
   };
 
+  /**
+   * Полоса, занятая карточкой узла справа. Симметрична reservedLeft: карточка
+   * тоже отступает от края окна, и этот отступ — тоже часть занятой полосы.
+   * Правую границу прямоугольника вписывания трогать не нужно — fit() уже
+   * центрирует облако в [left, left + width], и вычитания ширины достаточно.
+   */
+  const reservedRight = (): number => {
+    if (!inspectorRoot || inspectorRoot.hidden) return 0;
+    const box = inspectorRoot.getBoundingClientRect();
+    if (box.width === 0) return 0;
+    return canvas.clientWidth - box.left + 12;
+  };
+
   const followLayout = (): void => {
     const reservedBottom = hud ? hud.offsetHeight + 12 : 0;
     const left = reservedLeft();
-    const width = Math.max(1, canvas.clientWidth - left);
+    const right = reservedRight();
+    const width = Math.max(1, canvas.clientWidth - left - right);
     const height = Math.max(1, canvas.clientHeight - reservedBottom);
     camera.autoFit(scene.positions, scene.active, width, height, left);
   };
@@ -167,6 +185,88 @@ async function start(): Promise<void> {
   worker.postMessage(init);
 
   const engine = new TimeEngine(pack);
+
+  /** Выбранный узел; -1, если карточка закрыта. */
+  let selected = -1;
+  /**
+   * Карточка устарела и ждёт пересборки. `describeNode` — проход по всем
+   * путям и их событиям, а `applyDelta` зовётся на каждый шаг воспроизведения:
+   * пересобирать карточку там же означало бы платить этот проход на каждый
+   * коммит, то есть просадку кадра на большом репозитории. Вместо этого
+   * `applyDelta` только поднимает этот флаг, а настоящая пересборка идёт в
+   * цикле кадра не чаще раза в INSPECTOR_REBUILD_INTERVAL_MS — карточка всё
+   * равно не отстаёт настолько, чтобы это было заметно глазу.
+   */
+  let inspectorDirty = false;
+  /** Как часто во время воспроизведения разрешено пересобирать карточку узла. */
+  const INSPECTOR_REBUILD_INTERVAL_MS = 250;
+  let lastInspectorRebuildMs = -Infinity;
+
+  const inspector = inspectorRoot
+    ? mountInspector(inspectorRoot, {
+        pack,
+        onClose: () => {
+          selected = -1;
+          // Панель закрылась — освобождённая полоса справа должна тут же
+          // достаться дереву, а не ждать следующего сообщения раскладки.
+          followLayout();
+        },
+      })
+    : null;
+
+  /** Пересобирает карточку выбранного узла на текущем курсоре — единственное место, где это делается. */
+  function showSelected(): void {
+    if (selected < 0 || !inspector || !inspectorRoot) return;
+    const wasHidden = inspectorRoot.hidden;
+    inspector.show(describeNode(pack, selected, engine.cursor, engine.alive, engine.sizes));
+    // Полоса справа появляется вместе с первым показом — сообщаем камере
+    // немедленно, а не жданием следующего сообщения раскладки, которого
+    // может уже не быть.
+    if (wasHidden) followLayout();
+  }
+
+  /** Допуск попадания в экранных пикселях: на отдалении узел меньше пикселя. */
+  const PICK_SLACK_PX = 6;
+  /** Насколько указатель может сдвинуться, чтобы жест всё ещё считался кликом. */
+  const CLICK_SLOP_PX = 4;
+
+  // Камера сама слушает pointerdown/move/up на этом же холсте и на первом же
+  // движении отбирает автовписывание (Camera.attach). Здесь запоминаем только
+  // точку нажатия, чтобы отличить клик от конца перетаскивания: иначе конец
+  // каждого панорамирования открывал бы случайную карточку.
+  let pressX = 0;
+  let pressY = 0;
+  canvas.addEventListener('pointerdown', (event) => {
+    pressX = event.offsetX;
+    pressY = event.offsetY;
+  });
+  canvas.addEventListener('click', (event) => {
+    if (Math.hypot(event.offsetX - pressX, event.offsetY - pressY) > CLICK_SLOP_PX) return;
+
+    const [wx, wy] = camera.toWorld(event.offsetX, event.offsetY);
+    // pickNode молча возвращает NOTHING на нечисловых координатах — промах, а
+    // не ошибку. Если перевод в мировые координаты когда-нибудь даст NaN
+    // (сломанное состояние камеры и т. п.), симптомом было бы «клик не
+    // работает» без единого следа. Ловим это здесь, а не молчим вместе с ним.
+    if (!Number.isFinite(wx) || !Number.isFinite(wy)) {
+      console.warn('Клик по холсту: перевод в мировые координаты дал не-число.', { wx, wy });
+      return;
+    }
+
+    const path = pickNode(scene, wx, wy, PICK_SLACK_PX / camera.scale);
+    if (path === NOTHING) {
+      selected = -1;
+      // Освобождаем полосу справа немедленно, но только если карточка и
+      // правда была открыта — иначе клик мимо дерева гонял бы автовписывание
+      // без всякой причины.
+      const wasVisible = inspectorRoot ? !inspectorRoot.hidden : false;
+      inspector?.hide();
+      if (wasVisible) followLayout();
+      return;
+    }
+    selected = path;
+    showSelected();
+  });
 
   /** Неизменная часть строки состояния: имя, коммиты, файлы. */
   const packDescription = describePack(pack);
@@ -296,6 +396,11 @@ async function start(): Promise<void> {
       liveNodes = live;
       renderStatus();
     }
+
+    // Курсор или видимость сдвинулись — карточка выбранного узла устарела.
+    // Саму пересборку делает цикл кадра не чаще раза в
+    // INSPECTOR_REBUILD_INTERVAL_MS (см. showSelected), а не этот вызов.
+    if (selected >= 0) inspectorDirty = true;
   }
 
   const transportRoot = document.getElementById('transport');
@@ -416,6 +521,16 @@ async function start(): Promise<void> {
     lastFrameMs = nowMs;
     try {
       if (playback.advance(dt) > 0) syncTransport();
+
+      // Пересборка устаревшей карточки — не чаще раза в
+      // INSPECTOR_REBUILD_INTERVAL_MS (см. объявление флага выше): describeNode
+      // стоит проход по путям и событиям, а applyDelta зовётся на каждый шаг
+      // воспроизведения, так что пересборка на каждый коммит просадила бы кадр.
+      if (inspectorDirty && nowMs - lastInspectorRebuildMs >= INSPECTOR_REBUILD_INTERVAL_MS) {
+        showSelected();
+        inspectorDirty = false;
+        lastInspectorRebuildMs = nowMs;
+      }
 
       // Весь вывод кадра из буфера событий живёт в deriveActivity: здесь
       // остаётся только разложить его результат по слоям сцены.
