@@ -37,8 +37,15 @@ export class Camera {
     this.scale = next;
   }
 
-  /** Вписывает облако точек (пары x, y) в прямоугольник width × height. */
-  fit(positions: Float32Array, width: number, height: number): void {
+  /**
+   * Вписывает облако точек (пары x, y) в прямоугольник width × height,
+   * начинающийся в `left` пикселях от левого края вида. Смещение нужно ровно
+   * затем же, зачем вызывающий вычитает из высоты полосу HUD: поверх холста
+   * лежит почти непрозрачная боковая панель. Вычитания из ширины мало —
+   * облако центрируется в отведённом прямоугольнике, и без сдвига его центр
+   * встал бы левее, чем надо, а левый край так и остался бы под панелью.
+   */
+  fit(positions: Float32Array, width: number, height: number, left = 0): void {
     if (positions.length < 2) return;
     let minX = Infinity;
     let minY = Infinity;
@@ -59,7 +66,7 @@ export class Camera {
       MAX_SCALE,
       Math.max(MIN_SCALE, Math.min((width / spanX) * padding, (height / spanY) * padding)),
     );
-    this.x = width / 2 - ((minX + maxX) / 2) * this.scale;
+    this.x = left + width / 2 - ((minX + maxX) / 2) * this.scale;
     this.y = height / 2 - ((minY + maxY) / 2) * this.scale;
   }
 
@@ -70,7 +77,13 @@ export class Camera {
    * Возвращает false, если активных узлов не оказалось: вызывающий не должен
    * считать, что камера настроена, иначе она останется настроенной никогда.
    */
-  fitActive(positions: Float32Array, active: Uint8Array, width: number, height: number): boolean {
+  fitActive(
+    positions: Float32Array,
+    active: Uint8Array,
+    width: number,
+    height: number,
+    left = 0,
+  ): boolean {
     let minX = Infinity;
     let minY = Infinity;
     let maxX = -Infinity;
@@ -87,7 +100,7 @@ export class Camera {
       count++;
     }
     if (count === 0) return false;
-    this.fit(Float32Array.from([minX, minY, maxX, maxY]), width, height);
+    this.fit(Float32Array.from([minX, minY, maxX, maxY]), width, height, left);
     return true;
   }
 
@@ -108,9 +121,15 @@ export class Camera {
    * Возвращает false, если вписывать было нечего или камерой уже управляет
    * пользователь.
    */
-  autoFit(positions: Float32Array, active: Uint8Array, width: number, height: number): boolean {
+  autoFit(
+    positions: Float32Array,
+    active: Uint8Array,
+    width: number,
+    height: number,
+    left = 0,
+  ): boolean {
     if (this.userControlled) return false;
-    return this.fitActive(positions, active, width, height);
+    return this.fitActive(positions, active, width, height, left);
   }
 
   /** Вешает колесо и перетаскивание. Возвращает функцию отписки. */

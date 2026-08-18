@@ -2,7 +2,8 @@
 import { describe, it, expect } from 'vitest';
 import { directChildren, mountSidebar, topExtensions } from '../../web/ui/sidebar.js';
 import { buildPack } from '../../src/model/build.js';
-import type { RawCommit } from '../../src/git/types.js';
+import type { FilterSpec } from '../../web/state/filter.js';
+import type { VisibilitySpec } from '../../web/state/visibility.js';
 
 const change = (path: string) => ({
   path,
@@ -24,6 +25,28 @@ const pack = buildPack(
     },
   ],
   { repoName: 'demo', head: 'c0' },
+);
+
+/** Пакет с типовым шумом: на нём проверяется кнопка «скрыть типовой шум». */
+const noisyPack = buildPack(
+  [
+    {
+      hash: 'c0',
+      authorName: 'Аня',
+      authorEmail: 'anya@e.com',
+      timestamp: 1,
+      subject: 'c0',
+      changes: [
+        change('src/a.ts'),
+        change('node_modules/pkg/index.js'),
+        change('dist/bundle.js'),
+        change('vendor/lib.php'),
+        change('build/out.o'),
+        change('target/debug/bin'),
+      ],
+    },
+  ],
+  { repoName: 'noisy', head: 'c0' },
 );
 
 const id = (path: string) => pack.paths.indexOf(path);
@@ -146,5 +169,176 @@ describe('mountSidebar', () => {
     const labelledBy = field.getAttribute('aria-labelledby');
     expect(labelledBy).toBeTruthy();
     expect(document.getElementById(labelledBy!)?.textContent).toBe('Путь');
+  });
+});
+
+describe('mountSidebar — начальная видимость', () => {
+  it('снимает галочку у папки, скрытой в прошлой сессии', () => {
+    const root = document.createElement('div');
+    document.body.append(root);
+    mountSidebar(root, {
+      pack,
+      initialVisibility: { hidden: new Set([id('src')]), collapsed: new Set() },
+      onFilter: () => {},
+      onVisibility: () => {},
+    });
+
+    const src = root.querySelector<HTMLInputElement>(`input[data-hide="${id('src')}"]`)!;
+    const docs = root.querySelector<HTMLInputElement>(`input[data-hide="${id('docs')}"]`)!;
+    // Восстановлено ровно то, что скрывали, и ничего сверх.
+    expect(src.checked).toBe(false);
+    expect(docs.checked).toBe(true);
+  });
+
+  it('показывает свёрнутой ту папку, что была свёрнута в прошлой сессии', () => {
+    const root = document.createElement('div');
+    document.body.append(root);
+    mountSidebar(root, {
+      pack,
+      initialVisibility: { hidden: new Set(), collapsed: new Set([id('docs')]) },
+      onFilter: () => {},
+      onVisibility: () => {},
+    });
+
+    const docs = root.querySelector<HTMLButtonElement>(`button[data-collapse="${id('docs')}"]`)!;
+    const src = root.querySelector<HTMLButtonElement>(`button[data-collapse="${id('src')}"]`)!;
+    expect(docs.getAttribute('aria-label')).toContain('Развернуть папку на сцене');
+    expect(src.getAttribute('aria-label')).toContain('Свернуть папку в один узел');
+  });
+
+  it('без сохранённой видимости не скрывает и не сворачивает ничего', () => {
+    const root = document.createElement('div');
+    document.body.append(root);
+    mountSidebar(root, { pack, onFilter: () => {}, onVisibility: () => {} });
+
+    const boxes = [...root.querySelectorAll<HTMLInputElement>('input[data-hide]')];
+    expect(boxes.length).toBeGreaterThan(0);
+    expect(boxes.every((box) => box.checked)).toBe(true);
+  });
+});
+
+describe('mountSidebar — чипы расширений', () => {
+  it('сообщает выбранное расширение и снимает выбор повторным нажатием', () => {
+    const root = document.createElement('div');
+    document.body.append(root);
+    let last: FilterSpec | null = null;
+    mountSidebar(root, { pack, onFilter: (spec) => (last = spec), onVisibility: () => {} });
+
+    const chip = root.querySelector<HTMLButtonElement>('button[data-ext="ts"]')!;
+    chip.click();
+    expect([...(last as unknown as FilterSpec).extensions!]).toEqual(['ts']);
+    expect(chip.getAttribute('aria-pressed')).toBe('true');
+
+    chip.click();
+    // Ни одного выбранного расширения — это отсутствие фильтра, а не пустое
+    // множество: пустое погасило бы вообще всё.
+    expect((last as unknown as FilterSpec).extensions).toBeNull();
+    expect(chip.getAttribute('aria-pressed')).toBe('false');
+  });
+
+  it('копит несколько расширений одновременно', () => {
+    const root = document.createElement('div');
+    document.body.append(root);
+    let last: FilterSpec | null = null;
+    mountSidebar(root, { pack, onFilter: (spec) => (last = spec), onVisibility: () => {} });
+
+    root.querySelector<HTMLButtonElement>('button[data-ext="ts"]')!.click();
+    root.querySelector<HTMLButtonElement>('button[data-ext="md"]')!.click();
+    expect([...(last as unknown as FilterSpec).extensions!].sort()).toEqual(['md', 'ts']);
+  });
+});
+
+describe('mountSidebar — кнопка типового шума', () => {
+  it('скрывает каталоги зависимостей и сборки, не трогая свой код', () => {
+    const root = document.createElement('div');
+    document.body.append(root);
+    let last: VisibilitySpec | null = null;
+    mountSidebar(root, {
+      pack: noisyPack,
+      onFilter: () => {},
+      onVisibility: (spec) => (last = spec),
+    });
+
+    root.querySelector<HTMLButtonElement>('button[data-role="noise"]')!.click();
+
+    const noisyId = (path: string) => noisyPack.paths.indexOf(path);
+    const hidden = (last as unknown as VisibilitySpec).hidden;
+    for (const dir of ['node_modules', 'dist', 'vendor', 'build', 'target']) {
+      expect(hidden.has(noisyId(dir)), dir).toBe(true);
+    }
+    expect(hidden.has(noisyId('src'))).toBe(false);
+  });
+
+  it('снимает галочки скрытых папок в навигаторе', () => {
+    const root = document.createElement('div');
+    document.body.append(root);
+    mountSidebar(root, { pack: noisyPack, onFilter: () => {}, onVisibility: () => {} });
+
+    const noisyId = (path: string) => noisyPack.paths.indexOf(path);
+    root.querySelector<HTMLButtonElement>('button[data-role="noise"]')!.click();
+
+    expect(
+      root.querySelector<HTMLInputElement>(`input[data-hide="${noisyId('node_modules')}"]`)!.checked,
+    ).toBe(false);
+    expect(
+      root.querySelector<HTMLInputElement>(`input[data-hide="${noisyId('src')}"]`)!.checked,
+    ).toBe(true);
+  });
+});
+
+describe('mountSidebar — видимость задаётся снаружи', () => {
+  // Во второй половине среза инспектор будет скрывать и сворачивать папку из
+  // своего окна. Держателей состояния видимости должно остаться столько же,
+  // сколько было: панель обязана принять чужое состояние как своё.
+  it('принимает новую видимость и перерисовывает навигатор', () => {
+    const root = document.createElement('div');
+    document.body.append(root);
+    const handles = mountSidebar(root, { pack, onFilter: () => {}, onVisibility: () => {} });
+
+    handles.setVisibility({ hidden: new Set([id('src')]), collapsed: new Set([id('docs')]) });
+
+    expect(root.querySelector<HTMLInputElement>(`input[data-hide="${id('src')}"]`)!.checked).toBe(
+      false,
+    );
+    expect(
+      root
+        .querySelector<HTMLButtonElement>(`button[data-collapse="${id('docs')}"]`)!
+        .getAttribute('aria-label'),
+    ).toContain('Развернуть папку на сцене');
+  });
+
+  it('не зовёт обратный колбэк: иначе получилась бы петля', () => {
+    const root = document.createElement('div');
+    document.body.append(root);
+    let calls = 0;
+    const handles = mountSidebar(root, {
+      pack,
+      onFilter: () => {},
+      onVisibility: () => calls++,
+    });
+
+    handles.setVisibility({ hidden: new Set([id('src')]), collapsed: new Set() });
+
+    expect(calls).toBe(0);
+  });
+
+  it('принятое снаружи состояние становится своим: следующий клик считает от него', () => {
+    const root = document.createElement('div');
+    document.body.append(root);
+    let last: VisibilitySpec | null = null;
+    const handles = mountSidebar(root, {
+      pack,
+      onFilter: () => {},
+      onVisibility: (spec) => (last = spec),
+    });
+
+    handles.setVisibility({ hidden: new Set([id('src')]), collapsed: new Set() });
+    // Скрываем вторую папку кликом — первая обязана остаться скрытой.
+    const docs = root.querySelector<HTMLInputElement>(`input[data-hide="${id('docs')}"]`)!;
+    docs.checked = false;
+    docs.dispatchEvent(new Event('change', { bubbles: true }));
+
+    const hidden = (last as unknown as VisibilitySpec).hidden;
+    expect([...hidden].sort((a, b) => a - b)).toEqual([id('src'), id('docs')].sort((a, b) => a - b));
   });
 });

@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { HIDDEN, resolveVisibility } from '../../web/state/visibility.js';
+import {
+  decodeVisibility,
+  encodeVisibility,
+  HIDDEN,
+  resolveVisibility,
+} from '../../web/state/visibility.js';
 import { buildPack } from '../../src/model/build.js';
 import type { RawCommit } from '../../src/git/types.js';
 
@@ -123,5 +128,92 @@ describe('resolveVisibility', () => {
     const empty = buildPack([], { repoName: 'x', head: '0' });
     const result = resolveVisibility(empty, new Uint8Array(1), new Int32Array(1), NOTHING);
     expect(result.representative).toHaveLength(1);
+  });
+});
+
+/**
+ * Идентификаторы путей раздаются в порядке первого появления при обходе
+ * истории, а порядок задаёт чтение журнала по дате коммита. Влившаяся ветка
+ * встаёт в середину истории и сдвигает все последующие идентификаторы — тот же
+ * сохранённый номер назавтра означает уже другую папку. Поэтому хранятся
+ * строки путей, а разрешаются они в идентификаторы при загрузке.
+ */
+describe('кодек хранилища видимости', () => {
+  /** Тот же репозиторий, но с влившейся веткой впереди: идентификаторы съехали. */
+  const shifted = buildPack(
+    [
+      commit('branch', [add('lib/x.ts', 1), add('lib/deep/y.ts', 1)]),
+      commit('c0', [add('src/deep/a.ts', 10), add('src/b.ts', 20), add('docs/c.md', 5)]),
+    ],
+    { repoName: 'demo', head: 'c0' },
+  );
+  const shiftedId = (path: string) => shifted.paths.indexOf(path);
+
+  it('переживает пересчёт идентификаторов: разрешает по строкам путей', () => {
+    const raw = encodeVisibility(pack, {
+      hidden: new Set([id('src')]),
+      collapsed: new Set([id('docs')]),
+    });
+
+    // Проверка предпосылки: в новом пакете у тех же папок другие номера,
+    // иначе тест ничего бы не доказывал.
+    expect(shiftedId('src')).not.toBe(id('src'));
+
+    const restored = decodeVisibility(shifted, raw);
+    expect([...restored.hidden]).toEqual([shiftedId('src')]);
+    expect([...restored.collapsed]).toEqual([shiftedId('docs')]);
+  });
+
+  it('отбрасывает пути, которых в пакете нет', () => {
+    const raw = JSON.stringify({ hidden: ['src', 'ушедшая/папка'], collapsed: ['нет/такой'] });
+    const restored = decodeVisibility(pack, raw);
+    expect([...restored.hidden]).toEqual([id('src')]);
+    expect([...restored.collapsed]).toEqual([]);
+  });
+
+  it('на пустом хранилище не скрывает ничего', () => {
+    expect(decodeVisibility(pack, null).hidden.size).toBe(0);
+    expect(decodeVisibility(pack, '').collapsed.size).toBe(0);
+  });
+
+  it('переживает испорченное содержимое, не роняя страницу', () => {
+    for (const raw of ['{', 'не json вовсе', 'null', '42', '"строка"', '[1,2,3]']) {
+      const restored = decodeVisibility(pack, raw);
+      expect(restored.hidden.size, raw).toBe(0);
+      expect(restored.collapsed.size, raw).toBe(0);
+    }
+  });
+
+  it('переживает поля не того типа', () => {
+    const restored = decodeVisibility(
+      pack,
+      JSON.stringify({ hidden: 'src', collapsed: [1, null, { path: 'docs' }, 'docs'] }),
+    );
+    expect([...restored.hidden]).toEqual([]);
+    // Из мусорного массива уцелела единственная годная строка.
+    expect([...restored.collapsed]).toEqual([id('docs')]);
+  });
+
+  it('записывает строки путей, а не идентификаторы', () => {
+    const raw = encodeVisibility(pack, {
+      hidden: new Set([id('src')]),
+      collapsed: new Set([id('docs')]),
+    });
+    expect(JSON.parse(raw)).toEqual({ hidden: ['src'], collapsed: ['docs'] });
+  });
+
+  it('не записывает идентификаторы, которых в пакете нет', () => {
+    const raw = encodeVisibility(pack, {
+      hidden: new Set([id('src'), 99999, -1]),
+      collapsed: new Set(),
+    });
+    expect(JSON.parse(raw)).toEqual({ hidden: ['src'], collapsed: [] });
+  });
+
+  it('пережимает круг: записанное читается обратно тем же', () => {
+    const spec = { hidden: new Set([id('src'), id('docs')]), collapsed: new Set([id('src/deep')]) };
+    const restored = decodeVisibility(pack, encodeVisibility(pack, spec));
+    expect([...restored.hidden].sort()).toEqual([...spec.hidden].sort());
+    expect([...restored.collapsed]).toEqual([...spec.collapsed]);
   });
 });

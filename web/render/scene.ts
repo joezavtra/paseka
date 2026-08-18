@@ -15,6 +15,11 @@ export interface BeamLayer {
   toY: Float32Array;
   author: Uint32Array;
   strength: Float32Array;
+  /**
+   * Яркость фильтра у конца луча: её считает вывод кадра по тому же
+   * представителю, что и сам конец. Отрисовке остаётся только помножить.
+   */
+  alpha: Float32Array;
 }
 
 /** Значки авторов; всё индексируется идентификатором автора. */
@@ -167,7 +172,12 @@ export function drawScene(
     const [ax, ay] = camera.toScreen(input.beams.fromX[i]!, input.beams.fromY[i]!);
     const [bx, by] = camera.toScreen(input.beams.toX[i]!, input.beams.toY[i]!);
     const [cx, cy] = beamControl(ax, ay, bx, by);
-    ctx.globalAlpha = Math.min(1, Math.max(0, input.beams.strength[i]!)) * 0.8;
+    // Луч не может быть ярче узла, в который бьёт: иначе снятые галочки
+    // авторов гасили бы файлы, а лучи по ним светили бы в полную силу.
+    ctx.globalAlpha =
+      Math.min(1, Math.max(0, input.beams.strength[i]!)) *
+      0.8 *
+      Math.min(1, Math.max(0, input.beams.alpha[i]!));
     ctx.strokeStyle = input.actors.color[input.beams.author[i]!] ?? '#ffffff';
     ctx.beginPath();
     ctx.moveTo(ax, ay);

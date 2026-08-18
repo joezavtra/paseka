@@ -14,7 +14,12 @@ import { RecentEvents } from './time/recent.js';
 import { ActorField } from './render/actors.js';
 import { avatarColor, initialsFor } from './render/avatar.js';
 import type { ActorLayer, BeamLayer } from './render/scene.js';
-import { resolveVisibility, type VisibilitySpec } from './state/visibility.js';
+import {
+  decodeVisibility,
+  encodeVisibility,
+  resolveVisibility,
+  type VisibilitySpec,
+} from './state/visibility.js';
 import { computeAlpha, EMPTY_FILTER, type FilterSpec } from './state/filter.js';
 
 async function start(): Promise<void> {
@@ -62,6 +67,7 @@ async function start(): Promise<void> {
     toY: new Float32Array(ACTIVITY_CAPACITY),
     author: new Uint32Array(ACTIVITY_CAPACITY),
     strength: new Float32Array(ACTIVITY_CAPACITY),
+    alpha: new Float32Array(ACTIVITY_CAPACITY),
   };
 
   const flash = new Float32Array(pathCount);
@@ -105,16 +111,37 @@ async function start(): Promise<void> {
   camera.attach(canvas);
 
   const hud = document.getElementById('hud');
+  const sidebarRoot = document.getElementById('sidebar');
 
   /**
-   * Вписывает живые узлы, пока камерой не завладел пользователь. Полоса HUD
-   * (строка состояния и панель транспорта) из высоты вычитается: она лежит
-   * поверх холста, и без этого нижняя часть дерева пряталась бы под ней.
+   * Вписывает живые узлы, пока камерой не завладел пользователь. Обе полосы,
+   * занятые интерфейсом, из вида вычитаются: и HUD снизу (строка состояния и
+   * панель транспорта), и боковая панель слева. Оба слоя лежат поверх холста
+   * и почти непрозрачны, поэтому вписывание во всё окно прятало бы под ними
+   * края дерева — а достать их можно было бы только ручным панорамированием,
+   * которое навсегда выключает автовписывание.
+   *
+   * Слева, в отличие от низа, мало вычесть ширину: отсчёт идёт от левого края,
+   * и облако, вписанное в суженный прямоугольник, всё равно центрировалось бы
+   * поверх панели. Поэтому та же величина уходит во вписывание ещё и
+   * смещением. Панели может не быть в разметке или она может быть скрыта —
+   * тогда полоса нулевая, и вписывание работает как раньше.
    */
+  const reservedLeft = (): number => {
+    if (!sidebarRoot || sidebarRoot.hidden) return 0;
+    const box = sidebarRoot.getBoundingClientRect();
+    if (box.width === 0) return 0;
+    // Правый край панели, а не только её ширина: панель отступает от края
+    // окна, и этот отступ — тоже занятая полоса. Плюс зазор до дерева.
+    return box.right + 12;
+  };
+
   const followLayout = (): void => {
-    const reserved = hud ? hud.offsetHeight + 12 : 0;
-    const height = Math.max(1, canvas.clientHeight - reserved);
-    camera.autoFit(scene.positions, scene.active, canvas.clientWidth, height);
+    const reservedBottom = hud ? hud.offsetHeight + 12 : 0;
+    const left = reservedLeft();
+    const width = Math.max(1, canvas.clientWidth - left);
+    const height = Math.max(1, canvas.clientHeight - reservedBottom);
+    camera.autoFit(scene.positions, scene.active, width, height, left);
   };
 
   const worker = new Worker(new URL('./layout/worker.ts', import.meta.url), { type: 'module' });
@@ -310,16 +337,12 @@ async function start(): Promise<void> {
   /** Ключ хранилища привязан к репозиторию: у разных проектов свой набор. */
   const VISIBILITY_KEY = `gource-reborn:visibility:${pack.meta.repoName}`;
 
+  // Разбор и сборка содержимого живут в кодеке рядом с разрешением видимости —
+  // там их достаёт юнит-тест. Здесь остаётся только само хранилище: в приватном
+  // режиме обращение к нему бросает, и это единственное, что тут ловится.
   function loadVisibility(): VisibilitySpec {
-    // В приватном режиме обращение к хранилищу бросает — молча работаем без него.
     try {
-      const raw = localStorage.getItem(VISIBILITY_KEY);
-      if (!raw) return { hidden: new Set(), collapsed: new Set() };
-      const parsed = JSON.parse(raw) as { hidden?: number[]; collapsed?: number[] };
-      return {
-        hidden: new Set(Array.isArray(parsed.hidden) ? parsed.hidden : []),
-        collapsed: new Set(Array.isArray(parsed.collapsed) ? parsed.collapsed : []),
-      };
+      return decodeVisibility(pack, localStorage.getItem(VISIBILITY_KEY));
     } catch {
       return { hidden: new Set(), collapsed: new Set() };
     }
@@ -327,16 +350,12 @@ async function start(): Promise<void> {
 
   function saveVisibility(spec: VisibilitySpec): void {
     try {
-      localStorage.setItem(
-        VISIBILITY_KEY,
-        JSON.stringify({ hidden: [...spec.hidden], collapsed: [...spec.collapsed] }),
-      );
+      localStorage.setItem(VISIBILITY_KEY, encodeVisibility(pack, spec));
     } catch {
       // Не беда: выбор просто не переживёт перезагрузку.
     }
   }
 
-  const sidebarRoot = document.getElementById('sidebar');
   if (sidebarRoot) {
     visibilitySpec = loadVisibility();
     mountSidebar(sidebarRoot, {
@@ -418,6 +437,7 @@ async function start(): Promise<void> {
         beams.toY[i] = beam.toY;
         beams.author[i] = beam.author;
         beams.strength[i] = beam.strength;
+        beams.alpha[i] = beam.alpha;
       }
 
       actorField.update(dt, activity.targets);

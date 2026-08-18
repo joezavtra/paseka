@@ -19,6 +19,14 @@ export interface ActivityBeam {
   toX: number;
   toY: number;
   strength: number;
+  /**
+   * Яркость фильтра у конца луча. Считается здесь же, где разрешается сам
+   * конец, и по тому же представителю: правило «куда бьёт луч и насколько он
+   * ярок» обязано жить в одном месте. Иначе фильтр по авторам гасил бы заливку
+   * и вспышку, а лучи — самый заметный слой воспроизведения — продолжали бы
+   * бить в полную яркость по едва видимым узлам.
+   */
+  alpha: number;
 }
 
 export interface ActivityFrame {
@@ -36,6 +44,8 @@ export interface ActivityScene {
   positions: Float32Array;
   /** Кто представляет путь на экране; HIDDEN, если путь не показывается. */
   representative: Int32Array;
+  /** Яркость узла от фильтра; индекс — идентификатор пути. */
+  alpha: Float32Array;
 }
 
 interface Centroid {
@@ -99,7 +109,9 @@ export function deriveActivity(
       centroid.hits++;
     }
 
-    if (beams.length < beamLimit) beams.push({ author, toX: x, toY: y, strength });
+    if (beams.length < beamLimit) {
+      beams.push({ author, toX: x, toY: y, strength, alpha: scene.alpha[target]! });
+    }
   });
 
   // Порядок целей — по возрастанию идентификатора автора, а не по порядку

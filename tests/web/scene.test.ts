@@ -122,6 +122,7 @@ function sceneWithTwoNodes(): SceneInput {
       toY: new Float32Array(2),
       author: new Uint32Array(2),
       strength: new Float32Array(2),
+      alpha: new Float32Array(2).fill(1),
     },
     actors: {
       positions: new Float32Array(4),
@@ -256,6 +257,23 @@ describe('drawScene', () => {
     // strokeAlpha[0] — рёбра дерева; дальше два луча.
     expect(strokeAlpha[1]!).toBeGreaterThan(strokeAlpha[2]!);
     expect(strokeAlpha[2]!).toBeGreaterThan(0);
+  });
+
+  it('гасит луч по яркости его конца, а не только по силе события', () => {
+    const { ctx, strokeAlpha } = stubContext();
+    const input = sceneWithTwoNodes();
+    input.beams.count = 2;
+    input.beams.strength[0] = 1;
+    input.beams.strength[1] = 1;
+    // Оба луча одинаковой силы, но второй бьёт в погашенный фильтром узел.
+    input.beams.alpha[0] = 1;
+    input.beams.alpha[1] = 0.12;
+
+    drawScene(ctx, new Camera(), input, 800, 600);
+
+    // strokeAlpha[0] — рёбра дерева; дальше два луча.
+    expect(strokeAlpha[2]!).toBeLessThan(strokeAlpha[1]!);
+    expect(strokeAlpha[2]!).toBeCloseTo(strokeAlpha[1]! * 0.12, 5);
   });
 
   it('рисует значок автора: кружок его цветом, инициалы и имя рядом', () => {

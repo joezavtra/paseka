@@ -78,6 +78,13 @@ async function liveNodes(page: Page): Promise<number> {
 }
 
 test('фильтр гасит, а видимость убирает', async ({ page }) => {
+  // Общий таймаут в 60 с этому тесту мал: он трижды ждёт стабилизации яркости
+  // с дедлайном в 20 с каждый, плюс до 30 с на запуск процесса CLI. На
+  // нагруженной машине сумма перевалит за общий предел раньше, чем сработает
+  // собственный дедлайн, и вместо внятного «яркость не стабилизировалась»
+  // получится бесполезное сообщение о превышении таймаута теста.
+  test.setTimeout(180_000);
+
   const repo = await makeRepo([
     {
       message: 'первый',
@@ -118,9 +125,24 @@ test('фильтр гасит, а видимость убирает', async ({ p
   expect(restored).toBeGreaterThan(full * 0.95);
 
   // Скрываем папку: здесь узлы действительно уходят.
-  await page.locator('#sidebar input[data-hide]').first().uncheck();
+  const firstFolder = page.locator('#sidebar input[data-hide]').first();
+  const hiddenFolderId = await firstFolder.getAttribute('data-hide');
+  await firstFolder.uncheck();
   await expect.poll(async () => liveNodes(page), { timeout: 5_000 }).toBeLessThan(nodesAtStart);
   const afterHide = await liveNodes(page);
+
+  // Выбор обязан пережить перезагрузку страницы — и скрытой должна остаться
+  // ровно та же папка, а не соседняя: видимость хранится строками путей, и
+  // проверять её надо по имени папки, а не по «первой в списке».
+  await page.reload();
+  await page.waitForSelector('canvas[data-ready="true"]');
+  await expect(page.locator('#sidebar')).toBeVisible();
+  await expect.poll(async () => liveNodes(page), { timeout: 20_000 }).toBe(afterHide);
+  await expect(page.locator(`#sidebar input[data-hide="${hiddenFolderId}"]`)).not.toBeChecked();
+  const others = page.locator(`#sidebar input[data-hide]:not([data-hide="${hiddenFolderId}"])`);
+  const otherCount = await others.count();
+  expect(otherCount).toBeGreaterThan(0);
+  for (let i = 0; i < otherCount; i++) await expect(others.nth(i)).toBeChecked();
 
   // Возвращаем и сворачиваем ту же папку: узлов меньше, но сама папка на месте.
   await page.locator('#sidebar input[data-hide]').first().check();

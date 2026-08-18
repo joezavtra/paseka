@@ -2,7 +2,10 @@ import { describe, it, expect } from 'vitest';
 import { deriveActivity, type ActivityScene } from '../../web/render/activity.js';
 import { RecentEvents } from '../../web/time/recent.js';
 
-/** Сцена из n узлов: все живы, узел i стоит в (i * 10, i), каждый представляет сам себя. */
+/**
+ * Сцена из n узлов: все живы и на полной яркости, узел i стоит в (i * 10, i),
+ * каждый представляет сам себя.
+ */
 function sceneOf(n: number): ActivityScene {
   const positions = new Float32Array(n * 2);
   const representative = new Int32Array(n);
@@ -11,7 +14,12 @@ function sceneOf(n: number): ActivityScene {
     positions[i * 2 + 1] = i;
     representative[i] = i;
   }
-  return { active: new Uint8Array(n).fill(1), positions, representative };
+  return {
+    active: new Uint8Array(n).fill(1),
+    positions,
+    representative,
+    alpha: new Float32Array(n).fill(1),
+  };
 }
 
 describe('deriveActivity', () => {
@@ -27,7 +35,7 @@ describe('deriveActivity', () => {
     const frame = deriveActivity(recent, sceneOf(4), 0, 8);
 
     expect(frame.flashes).toEqual([{ path: 2, strength: 1 }]);
-    expect(frame.beams).toEqual([{ author: 1, toX: 20, toY: 2, strength: 1 }]);
+    expect(frame.beams).toEqual([{ author: 1, toX: 20, toY: 2, strength: 1, alpha: 1 }]);
     expect(frame.targets).toEqual([{ author: 1, x: 20, y: 2 }]);
   });
 
@@ -176,6 +184,7 @@ describe('deriveActivity', () => {
       positions: Float32Array.from([0, 0, 10, 10, 20, 20, 30, 30]),
       // Путь 3 представлен путём 1: папка свёрнута.
       representative: Int32Array.from([0, 1, 1, 1]),
+      alpha: new Float32Array(4).fill(1),
     };
 
     const frame = deriveActivity(recent, scene, 0, 8);
@@ -198,6 +207,7 @@ describe('deriveActivity', () => {
         active: Uint8Array.from([1, 1, 1]),
         positions: Float32Array.from([0, 0, 10, 10, 20, 20]),
         representative: Int32Array.from([0, 1, -1]),
+        alpha: new Float32Array(3).fill(1),
       },
       0,
       8,
@@ -205,6 +215,36 @@ describe('deriveActivity', () => {
     expect(frame.beams).toHaveLength(0);
     expect(frame.flashes).toHaveLength(0);
     expect(frame.targets).toHaveLength(0);
+  });
+
+  it('берёт яркость луча у его конца: фильтр гасит луч вместе с файлом', () => {
+    const recent = new RecentEvents(8, 1000, 4);
+    recent.push(2, 1, 0);
+    const scene = sceneOf(4);
+    scene.alpha[2] = 0.12;
+
+    const frame = deriveActivity(recent, scene, 0, 8);
+
+    // Луч и вспышка гаснут заодно: фильтр по авторам иначе виден только на
+    // заливке узлов, а лучи — самый заметный слой воспроизведения.
+    expect(frame.beams[0]!.alpha).toBeCloseTo(0.12, 5);
+  });
+
+  it('яркость луча свёрнутой папки берётся у представителя, а не у файла внутри', () => {
+    const recent = new RecentEvents(8, 1000, 2);
+    recent.push(3, 0, 0);
+    const scene: ActivityScene = {
+      active: Uint8Array.from([1, 1, 0, 0]),
+      positions: Float32Array.from([0, 0, 10, 10, 20, 20, 30, 30]),
+      representative: Int32Array.from([0, 1, 1, 1]),
+      // Сам файл ярок, но на экране его нет; рисуется представитель, и
+      // яркость обязана быть его — иначе луч спорил бы с узлом, в который бьёт.
+      alpha: Float32Array.from([1, 0.12, 1, 1]),
+    };
+
+    const frame = deriveActivity(recent, scene, 0, 8);
+
+    expect(frame.beams[0]!.alpha).toBeCloseTo(0.12, 5);
   });
 
   it('событие пути с мёртвым представителем не даёт ни луча, ни вспышки', () => {
@@ -218,6 +258,7 @@ describe('deriveActivity', () => {
         active: Uint8Array.from([1, 0, 1]),
         positions: Float32Array.from([0, 0, 10, 10, 20, 20]),
         representative: Int32Array.from([0, 1, 1]),
+        alpha: new Float32Array(3).fill(1),
       },
       0,
       8,
