@@ -186,6 +186,13 @@ export function mountSidebar(root: HTMLElement, options: SidebarOptions): Sideba
         if (collapsed.has(child)) collapsed.delete(child);
         else collapsed.add(child);
         fold.textContent = collapsed.has(child) ? '◼' : '◻';
+        // Значок сменился — доступное имя обязано смениться вместе с ним,
+        // иначе кнопка после клика говорит скринридеру неправду о своём
+        // текущем действии.
+        fold.setAttribute(
+          'aria-label',
+          collapsed.has(child) ? 'Развернуть папку на сцене' : 'Свернуть папку в один узел',
+        );
         emitVisibility();
       });
 
