@@ -13,6 +13,8 @@ import { RecentEvents } from './time/recent.js';
 import { ActorField } from './render/actors.js';
 import { avatarColor, initialsFor } from './render/avatar.js';
 import type { ActorLayer, BeamLayer } from './render/scene.js';
+import { resolveVisibility, type VisibilitySpec } from './state/visibility.js';
+import { computeAlpha, EMPTY_FILTER, type FilterSpec } from './state/filter.js';
 
 async function start(): Promise<void> {
   const canvas = document.getElementById('scene') as HTMLCanvasElement;
@@ -65,17 +67,32 @@ async function start(): Promise<void> {
   /** Пути, которым в прошлом кадре ставили свечение: гасим только их. */
   let litPaths: number[] = [];
 
-  const scene: SceneInput = {
+  const scene: SceneInput & { representative: Int32Array } = {
     active: new Uint8Array(pathCount),
     positions: new Float32Array(pathCount * 2),
     radius: new Float32Array(pathCount),
     color,
+    alpha: new Float32Array(pathCount).fill(1),
     linkSource: new Uint32Array(0),
     linkTarget: new Uint32Array(0),
     flash,
     beams,
     actors,
+    // Кто представляет путь на экране; заполняется в applyDelta из
+    // resolveVisibility. До первого вызова не используется — deriveActivity
+    // не позовут раньше applyDelta.
+    representative: new Int32Array(pathCount),
   };
+
+  let visibilitySpec: VisibilitySpec = { hidden: new Set(), collapsed: new Set() };
+  let filterSpec: FilterSpec = EMPTY_FILTER;
+  /** Куда едет яркость и откуда: переход длится MS, чтобы фильтр не мигал. */
+  const ALPHA_TRANSITION_MS = 200;
+  let alphaFrom: Float32Array = new Float32Array(pathCount).fill(1);
+  let alphaTo: Float32Array = new Float32Array(pathCount).fill(1);
+  let alphaStartedAt = -Infinity;
+  /** Рисуемая маска прошлого применения: из её разницы берётся список рождающихся. */
+  const prevDrawn = new Uint8Array(pathCount);
 
   const camera = new Camera();
   camera.attach(canvas);
@@ -135,14 +152,18 @@ async function start(): Promise<void> {
    * радиусы остались бы от прежнего положения курсора.
    */
   function applyDelta(delta: TimeDelta, full = false): void {
-    scene.active.set(engine.alive);
+    const visibility = resolveVisibility(pack, engine.alive, engine.sizes, visibilitySpec);
+    scene.active.set(visibility.drawn);
+    scene.representative = visibility.representative;
 
     const radiusIds: number[] = [];
     const radiusValues: number[] = [];
     const remember = (path: number) => {
       // Округляем до float32: scene.radius хранит именно его, и без округления
-      // сравнение «изменилось ли» было бы истинным всегда.
-      const next = Math.fround(radiusFor(engine.sizes[path]!, pack.pathIsDir[path] === 1));
+      // сравнение «изменилось ли» было бы истинным всегда. Размер берём из
+      // visibility.sizes, а не из engine.sizes: у свёрнутой папки он должен
+      // отражать спрятанный внутри объём.
+      const next = Math.fround(radiusFor(visibility.sizes[path]!, pack.pathIsDir[path] === 1));
       if (scene.radius[path] === next) return;
       scene.radius[path] = next;
       radiusIds.push(path);
@@ -164,16 +185,26 @@ async function start(): Promise<void> {
       for (const path of delta.touched) remember(path);
     }
 
+    // Разница движка отвечает на вопрос «что родилось в истории», а воркеру
+    // нужен ответ на другой: «что появилось на сцене». С видимостью это уже не
+    // одно и то же — развёрнутая папка выпускает наружу узлы, которые в истории
+    // не менялись.
+    const born: number[] = [];
+    for (let path = 0; path < pathCount; path++) {
+      if (scene.active[path] === 1 && prevDrawn[path] === 0) born.push(path);
+    }
+    prevDrawn.set(scene.active);
+
     // Пока воркер не прислал позиции нового узла, рисуем его у родителя, а не
-    // в мировом нуле: иначе на каждый коммит с воспроизведением будет вспышка
-    // в центре сцены на один кадр. Годится только уже стоявший родитель — если
-    // он сам родился в этой же разнице, у него ещё нет настоящей позиции.
-    const addedThisDelta = new Set(delta.added);
-    for (const path of delta.added) {
+    // в мировом нуле: иначе на каждый появившийся узел будет вспышка в центре
+    // сцены на один кадр. Годится только уже стоявший родитель — если он сам
+    // родился в этой же разнице, у него ещё нет настоящей позиции.
+    const bornThisDelta = new Set(born);
+    for (const path of born) {
       const parentId = pack.pathParent[path]!;
       if (parentId === path) continue; // корень
       if (scene.active[parentId] !== 1) continue;
-      if (addedThisDelta.has(parentId)) continue;
+      if (bornThisDelta.has(parentId)) continue;
       scene.positions[path * 2] = scene.positions[parentId * 2]!;
       scene.positions[path * 2 + 1] = scene.positions[parentId * 2 + 1]!;
     }
@@ -185,7 +216,7 @@ async function start(): Promise<void> {
     const update: LayoutUpdate = {
       type: 'update',
       active: scene.active.slice(),
-      added: delta.added,
+      added: Uint32Array.from(born),
       radiusIds: Uint32Array.from(radiusIds),
       radiusValues: Float32Array.from(radiusValues),
       linkSource: links.source,
@@ -246,6 +277,27 @@ async function start(): Promise<void> {
   function syncTransport(): void {
     handles?.setCursor(engine.cursor, formatCommitLabel(pack, engine.cursor));
     handles?.setPlaying(playback.playing);
+  }
+
+  /**
+   * Применяет новую спецификацию видимости: она убирает узлы из симуляции и
+   * раскладки, поэтому нужен полный пересчёт от текущего курсора, а не
+   * инкрементальная разница.
+   */
+  function applyVisibility(next: VisibilitySpec): void {
+    visibilitySpec = next;
+    applyDelta(engine.seek(engine.cursor), true);
+  }
+
+  /**
+   * Применяет новую спецификацию фильтра: она только гасит, поэтому дерево не
+   * трогаем — запускаем плавный переход яркости от текущей к целевой.
+   */
+  function applyFilter(next: FilterSpec, nowMs: number): void {
+    filterSpec = next;
+    alphaFrom = scene.alpha.slice();
+    alphaTo = computeAlpha(pack, filterSpec);
+    alphaStartedAt = nowMs;
   }
 
   applyDelta(engine.seek(pack.meta.commitCount - 1), true);
@@ -310,6 +362,17 @@ async function start(): Promise<void> {
       if (activity.targets.length !== shownAuthors) {
         shownAuthors = activity.targets.length;
         renderStatus();
+      }
+
+      // Переход яркости фильтра: считаем каждый кадр, пока не доехали до цели,
+      // иначе смена фильтра переключала бы дерево резким миганием.
+      const t = Math.min(1, (nowMs - alphaStartedAt) / ALPHA_TRANSITION_MS);
+      if (t < 1) {
+        for (let path = 0; path < pathCount; path++) {
+          scene.alpha[path] = alphaFrom[path]! + (alphaTo[path]! - alphaFrom[path]!) * t;
+        }
+      } else if (scene.alpha !== alphaTo) {
+        scene.alpha.set(alphaTo);
       }
 
       drawScene(ctx, camera, scene, canvas.clientWidth, canvas.clientHeight);

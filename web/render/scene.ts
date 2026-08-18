@@ -4,9 +4,8 @@ import { PALETTE } from './palette.js';
 /**
  * Лучи от авторов к задетым файлам. Оба конца — уже мировые координаты, а не
  * идентификаторы: правило «в какой узел бьёт луч» принадлежит выводу кадра
- * (web/render/activity.ts), и знать про него отрисовке незачем. В срезе 5, где
- * луч свёрнутой папки должен бить в её представителя, это правило меняется
- * ровно в одном месте.
+ * (web/render/activity.ts), и знать про него отрисовке незачем. Луч свёрнутой
+ * папки бьёт в её представителя — это правило меняется ровно в одном месте.
  */
 export interface BeamLayer {
   count: number;
@@ -39,6 +38,11 @@ export interface SceneInput {
    * этого пришлось бы каждый кадр разбирать обратно в компоненты.
    */
   color: Uint8Array;
+  /**
+   * Яркость узла от фильтра: 1 — попал, около нуля — нет. Фильтр именно гасит,
+   * поэтому альфа множится на кисть, а узел остаётся на своём месте в дереве.
+   */
+  alpha: Float32Array;
   linkSource: Uint32Array;
   linkTarget: Uint32Array;
   /** Свечение узла от недавнего касания: 0 — нет, 1 — только что задет. */
@@ -94,16 +98,22 @@ export function drawScene(
 
   ctx.strokeStyle = '#2a3140';
   ctx.lineWidth = Math.max(0.4, camera.scale * 0.35);
-  ctx.beginPath();
   for (let i = 0; i < input.linkSource.length; i++) {
-    const a = input.linkSource[i]! * 2;
-    const b = input.linkTarget[i]! * 2;
-    const [ax, ay] = camera.toScreen(input.positions[a]!, input.positions[a + 1]!);
-    const [bx, by] = camera.toScreen(input.positions[b]!, input.positions[b + 1]!);
+    const source = input.linkSource[i]!;
+    const target = input.linkTarget[i]!;
+    // Ребро не может быть ярче своих концов: иначе погашенная ветка осталась бы
+    // соединена яркими линиями и читалась бы как активная.
+    const edgeAlpha = Math.min(input.alpha[source]!, input.alpha[target]!);
+    if (edgeAlpha <= 0) continue;
+    const [ax, ay] = camera.toScreen(input.positions[source * 2]!, input.positions[source * 2 + 1]!);
+    const [bx, by] = camera.toScreen(input.positions[target * 2]!, input.positions[target * 2 + 1]!);
+    ctx.globalAlpha = edgeAlpha;
+    ctx.beginPath();
     ctx.moveTo(ax, ay);
     ctx.lineTo(bx, by);
+    ctx.stroke();
   }
-  ctx.stroke();
+  ctx.globalAlpha = 1;
 
   for (let path = 0; path < input.active.length; path++) {
     if (input.active[path] === 0) continue;
@@ -112,6 +122,7 @@ export function drawScene(
     const r = flashRadius(input.radius[path]!, flash) * camera.scale;
     // Отсечение: за границами вида рисовать нечего, а узлов десятки тысяч.
     if (sx + r < 0 || sy + r < 0 || sx - r > width || sy - r > height) continue;
+    ctx.globalAlpha = input.alpha[path]!;
     ctx.fillStyle = PALETTE[input.color[path]!]!;
     ctx.beginPath();
     ctx.arc(sx, sy, Math.max(0.5, r), 0, Math.PI * 2);
@@ -119,11 +130,11 @@ export function drawScene(
     if (flash > 0) {
       // Подсветку кладём поверх цвета узла, а не подменяем его: так виден и
       // тип файла, и факт касания.
-      ctx.globalAlpha = Math.min(1, flash) * 0.55;
+      ctx.globalAlpha = Math.min(1, flash) * 0.55 * input.alpha[path]!;
       ctx.fillStyle = '#ffffff';
       ctx.fill();
-      ctx.globalAlpha = 1;
     }
+    ctx.globalAlpha = 1;
   }
 
   ctx.lineWidth = 1.4;

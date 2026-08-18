@@ -2,14 +2,16 @@ import { describe, it, expect } from 'vitest';
 import { deriveActivity, type ActivityScene } from '../../web/render/activity.js';
 import { RecentEvents } from '../../web/time/recent.js';
 
-/** Сцена из n узлов: все живы, узел i стоит в (i * 10, i). */
+/** Сцена из n узлов: все живы, узел i стоит в (i * 10, i), каждый представляет сам себя. */
 function sceneOf(n: number): ActivityScene {
   const positions = new Float32Array(n * 2);
+  const representative = new Int32Array(n);
   for (let i = 0; i < n; i++) {
     positions[i * 2] = i * 10;
     positions[i * 2 + 1] = i;
+    representative[i] = i;
   }
-  return { active: new Uint8Array(n).fill(1), positions };
+  return { active: new Uint8Array(n).fill(1), positions, representative };
 }
 
 describe('deriveActivity', () => {
@@ -164,5 +166,41 @@ describe('deriveActivity', () => {
       beams: [],
       targets: [],
     });
+  });
+
+  it('луч свёрнутой папки бьёт в неё, а не в спрятанный внутри файл', () => {
+    const recent = new RecentEvents(8, 1000, 2);
+    recent.push(3, 0, 0); // файл внутри свёрнутой папки
+    const scene = {
+      active: Uint8Array.from([1, 1, 0, 0]),
+      positions: Float32Array.from([0, 0, 10, 10, 20, 20, 30, 30]),
+      // Путь 3 представлен путём 1: папка свёрнута.
+      representative: Int32Array.from([0, 1, 1, 1]),
+    };
+
+    const frame = deriveActivity(recent, scene, 0, 8);
+    expect(frame.beams).toHaveLength(1);
+    expect(frame.beams[0]!.toX).toBe(10);
+    expect(frame.beams[0]!.toY).toBe(10);
+    expect(frame.flashes[0]!.path).toBe(1);
+    expect(frame.targets[0]!.x).toBe(10);
+  });
+
+  it('событие скрытого пути не даёт ни луча, ни вспышки', () => {
+    const recent = new RecentEvents(8, 1000, 2);
+    recent.push(2, 0, 0);
+    const frame = deriveActivity(
+      recent,
+      {
+        active: Uint8Array.from([1, 1, 0]),
+        positions: Float32Array.from([0, 0, 10, 10, 20, 20]),
+        representative: Int32Array.from([0, 1, -1]),
+      },
+      0,
+      8,
+    );
+    expect(frame.beams).toHaveLength(0);
+    expect(frame.flashes).toHaveLength(0);
+    expect(frame.targets).toHaveLength(0);
   });
 });

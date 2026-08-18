@@ -18,6 +18,8 @@ interface Stub {
   ctx: CanvasRenderingContext2D;
   /** Кисть на каждом fill(). */
   fills: string[];
+  /** Прозрачность на каждом fill(): по ней видно гашение узла альфой фильтра. */
+  fillAlpha: number[];
   /** Кисть на каждом stroke(). */
   strokes: string[];
   /** Написанный текст вместе с кистью и местом. */
@@ -37,6 +39,7 @@ interface Stub {
  */
 function stubContext(): Stub {
   const fills: string[] = [];
+  const fillAlpha: number[] = [];
   const strokes: string[] = [];
   const strokeAlpha: number[] = [];
   const texts: { text: string; x: number; y: number; fill: string }[] = [];
@@ -65,6 +68,7 @@ function stubContext(): Stub {
     },
     fill() {
       fills.push(String(ctx.fillStyle));
+      fillAlpha.push(Number(ctx.globalAlpha));
     },
     fillText(text: string, x: number, y: number) {
       texts.push({ text, x, y, fill: String(ctx.fillStyle) });
@@ -83,7 +87,15 @@ function stubContext(): Stub {
     },
   };
 
-  return { ctx: ctx as unknown as CanvasRenderingContext2D, fills, strokes, texts, curves, strokeAlpha };
+  return {
+    ctx: ctx as unknown as CanvasRenderingContext2D,
+    fills,
+    fillAlpha,
+    strokes,
+    texts,
+    curves,
+    strokeAlpha,
+  };
 }
 
 /** Сцена из двух узлов без лучей и значков — основа, которую дописывают тесты. */
@@ -92,11 +104,15 @@ function sceneWithTwoNodes(): SceneInput {
     active: Uint8Array.from([1, 1]),
     positions: Float32Array.from([0, 0, 10, 10]),
     radius: Float32Array.from([3, 3]),
-    // Цвет — индекс в палитре, а не строка: в срезе 5 его придётся умножать
-    // на альфу гашения покадрово, и строки для этого негодны.
+    // Цвет — индекс в палитре, а не строка: его приходится умножать на альфу
+    // гашения покадрово, и строки для этого негодны.
     color: Uint8Array.from([DIR_COLOR_INDEX, 3]),
-    linkSource: new Uint32Array(0),
-    linkTarget: new Uint32Array(0),
+    alpha: new Float32Array(2).fill(1),
+    // Ребро между двумя узлами сцены: по умолчанию оба конца в полной яркости,
+    // поэтому оно рисуется всегда первым stroke() кадра — на это опираются
+    // тесты, которые проверяют кисть и прозрачность именно рёбер.
+    linkSource: Uint32Array.from([0]),
+    linkTarget: Uint32Array.from([1]),
     flash: new Float32Array(2),
     beams: {
       count: 0,
@@ -165,6 +181,35 @@ describe('drawScene', () => {
     expect(curves).toHaveLength(1);
     expect(curves[0]!.x).toBeCloseTo(10, 5);
     expect(curves[0]!.y).toBeCloseTo(10, 5);
+  });
+
+  it('гасит узел по альфе, не убирая его со сцены', () => {
+    const { ctx, fills, fillAlpha } = stubContext();
+    const input = sceneWithTwoNodes();
+    input.alpha[0] = 1;
+    input.alpha[1] = 0.12;
+
+    drawScene(ctx, new Camera(), input, 800, 600);
+
+    // Узел погашен, но не пропал: оба fill() состоялись, и среди прозрачностей
+    // есть яркость погашенного узла. Значение прошло через Float32Array,
+    // поэтому сравниваем с допуском, а не на точное равенство.
+    expect(fillAlpha.some((value) => Math.abs(value - 0.12) < 1e-4)).toBe(true);
+    expect(fills.length).toBe(2);
+  });
+
+  it('гасит ребро вместе с его более тусклым концом', () => {
+    const { ctx, strokes, strokeAlpha } = stubContext();
+    const input = sceneWithTwoNodes();
+    input.alpha[0] = 1;
+    input.alpha[1] = 0.12;
+
+    drawScene(ctx, new Camera(), input, 800, 600);
+
+    // Первый stroke — ребро дерева: его прозрачность не может быть ярче
+    // погашенного конца, иначе ветка выглядела бы соединённой яркой линией.
+    expect(strokes[0]).toBe('#2a3140');
+    expect(strokeAlpha[0]).toBeCloseTo(0.12, 5);
   });
 
   it('гасит луч по его силе', () => {
