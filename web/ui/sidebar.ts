@@ -144,14 +144,25 @@ export function mountSidebar(root: HTMLElement, options: SidebarOptions): Sideba
   });
   const searchCount = document.createElement('div');
   searchCount.dataset.role = 'search-count';
+  // Единственное место, где написано про Enter: без aria-live пользователь
+  // скринридера не узнал бы ни числа совпадений, ни этой подсказки — счётчик
+  // меняется по мере набора, а не в ответ на действие, которое озвучилось бы
+  // само.
+  searchCount.setAttribute('role', 'status');
+  searchCount.setAttribute('aria-live', 'polite');
   searchBox.append(searchField, searchCount);
 
   // Клавиша `/` — стандартный жест «перейти к поиску»; ownsTextInput решает
   // тот же вопрос, что и у пробела в транспорте и у Escape в карточке узла:
   // не отбирать клавишу у поля, которое и так умеет её принять.
+  //
+  // Shift сознательно не в списке запрещённых модификаторов: на раскладках,
+  // где `/` набирается только с Shift (немецкая, французская), запрет по
+  // shiftKey сделал бы клавишу нерабочей для них целиком. event.key уже
+  // учитывает раскладку и даёт `/` только когда символ действительно набран.
   const handleSlash = (event: KeyboardEvent): void => {
     if (event.key !== '/') return;
-    if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return;
+    if (event.ctrlKey || event.metaKey || event.altKey) return;
     if (ownsTextInput(event.target)) return;
     event.preventDefault();
     searchField.focus();

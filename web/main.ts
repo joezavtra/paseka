@@ -192,9 +192,19 @@ async function start(): Promise<void> {
    * `applySearch`; здесь только перенос на представителей, который нужен
    * заново при каждой смене видимости или курсора, даже если образец не
    * менялся (applyDelta зовёт именно этот, более дешёвый путь).
+   *
+   * Ранний выход при пустом образце: applyDelta зовёт это на каждый шаг
+   * воспроизведения (тот же повод, по которому пересборка карточки узла
+   * вынесена из applyDelta в throttled цикл кадра, см. inspectorDirty ниже),
+   * и полный проход по путям с новым Uint8Array(pathCount) ради пустого
+   * результата на каждый коммит был бы тем же расточительством в самом частом
+   * случае — поиск не используется вовсе. Саму маску гасит `applySearch`
+   * один раз, в момент, когда образец становится пустым, а не этот вызов на
+   * каждом кадре.
    */
   function refreshHits(): { first: number; count: number } {
-    const projected = projectHits(searchHits, scene.representative, scene.active);
+    if (searchQuery.trim().length === 0) return { first: -1, count: 0 };
+    const projected = projectHits(searchHits, scene.representative, scene.active, engine.alive);
     scene.hit = projected.drawnHits;
     sidebar?.setSearchCount(projected.count, searchQuery);
     return { first: projected.first, count: projected.count };
@@ -204,6 +214,15 @@ async function start(): Promise<void> {
   function applySearch(query: string): { first: number; count: number } {
     searchQuery = query;
     searchHits = computeHits(pack, searchQuery);
+    if (searchQuery.trim().length === 0) {
+      // Гасим маску один раз здесь, а не на каждый кадр в refreshHits: поле
+      // очистили — кольца обязаны пропасть немедленно, но дальше, пока новый
+      // образец не введён, applyDelta будет обходить это дешёвым ранним
+      // выходом выше.
+      scene.hit.fill(0);
+      sidebar?.setSearchCount(0, searchQuery);
+      return { first: -1, count: 0 };
+    }
     return refreshHits();
   }
 
@@ -526,8 +545,21 @@ async function start(): Promise<void> {
         // Нуль совпадений — камеру не трогаем вовсе: дёргать вид ради пустого
         // результата было бы хуже, чем оставить его как есть.
         if (first < 0) return;
+        const fx = scene.positions[first * 2]!;
+        const fy = scene.positions[first * 2 + 1]!;
+        // Симметрично клику по холсту: focusOn необратимо объявляет камеру
+        // управляемой вручную, и негодные координаты увезли бы её туда
+        // навсегда — автовписывание больше не вернёт вид.
+        if (!Number.isFinite(fx) || !Number.isFinite(fy)) {
+          console.warn('Поиск: координаты найденного узла ещё не готовы, камера не трогается.', {
+            first,
+            fx,
+            fy,
+          });
+          return;
+        }
         const { left, width, height } = viewBox();
-        camera.focusOn(scene.positions[first * 2]!, scene.positions[first * 2 + 1]!, width, height, left);
+        camera.focusOn(fx, fy, width, height, left);
       },
     });
   }

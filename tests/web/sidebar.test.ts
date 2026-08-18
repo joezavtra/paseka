@@ -459,6 +459,36 @@ describe('mountSidebar — поиск', () => {
     expect(event.defaultPrevented).toBe(true);
   });
 
+  it('"/" со Shift тоже фокусирует поле: на некоторых раскладках это единственный способ набрать слэш', () => {
+    const root = document.createElement('div');
+    document.body.append(root);
+    mountSidebar(root, { pack, onFilter: () => {}, onVisibility: () => {} });
+
+    const field = root.querySelector<HTMLInputElement>('input[data-role="search"]')!;
+    const event = new KeyboardEvent('keydown', {
+      key: '/',
+      shiftKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    document.body.dispatchEvent(event);
+
+    expect(document.activeElement).toBe(field);
+    expect(event.defaultPrevented).toBe(true);
+  });
+
+  it('счётчик совпадений озвучивается ассистивными технологиями', () => {
+    const root = document.createElement('div');
+    document.body.append(root);
+    mountSidebar(root, { pack, onFilter: () => {}, onVisibility: () => {} });
+
+    const counter = root.querySelector('[data-role="search-count"]')!;
+    // aria-live один — без него смена текста по мере набора и подсказка про
+    // Enter не дошли бы до пользователя скринридера.
+    expect(counter.getAttribute('aria-live')).toBe('polite');
+    expect(counter.getAttribute('role')).toBe('status');
+  });
+
   it('"/" внутри текстового поля не перехватывается глобальным обработчиком', () => {
     const root = document.createElement('div');
     document.body.append(root);
