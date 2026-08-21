@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Устаревшие прогоны отменяются: на бесплатных минутах это заметно.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: typecheck, unit, build (node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['22', '24']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      # --ignore-scripts: в package.json есть prepare (сборка для npx из git),
+      # а здесь сборка идёт отдельным шагом и падать должна именно на нём.
+      - run: npm ci --ignore-scripts
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+  e2e:
+    name: e2e (chromium)
+    runs-on: ubuntu-latest
+    # Если не проходит typecheck, поднимать браузер незачем.
+    needs: check
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      # Только chromium: секции projects в конфиге нет, остальные браузеры
+      # были бы минутами и трафиком впустую.
+      - run: npx playwright install --with-deps chromium
+      # Сборка обязательна до сквозных: tests/helpers/cli.ts запускает
+      # dist/node/cli/main.js, а CLI перед стартом требует dist/web/index.html.
+      - run: npm run build
+      - run: npm run test:e2e
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 7

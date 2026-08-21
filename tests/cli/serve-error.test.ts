@@ -47,7 +47,7 @@ describe('run (процесс)', () => {
     async () => {
       const child = spawn(
         'npx',
-        ['tsx', 'src/cli/main.ts', '/does/not/exist/gource-reborn-e2e', '--port', '0', '--no-open'],
+        ['tsx', 'src/cli/main.ts', '/does/not/exist/paseka-e2e', '--port', '0', '--no-open'],
         { stdio: ['ignore', 'ignore', 'pipe'] },
       );
 

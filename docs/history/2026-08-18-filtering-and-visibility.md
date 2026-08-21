@@ -1,6 +1,5 @@
 # Фильтрация и видимость поддеревьев — план реализации
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Фильтр по автору, пути и расширению гасит непопавшее, не разрушая дерево; любую папку можно скрыть или свернуть в один узел.
 
@@ -8,7 +7,7 @@
 
 **Tech Stack:** TypeScript (strict, ESM), Node 20+, Vite, vitest, happy-dom, Playwright.
 
-**Spec:** [2026-08-17-gource-reborn-design.md](../specs/2026-08-17-gource-reborn-design.md) — §9 и §10, первая половина среза 5.
+**Spec:** [docs/design.md](../design.md) — §9 и §10, первая половина среза 5.
 
 **Scope:** инспектор узла, поиск, подписи и наведение — второй план среза 5. Экспорт и перф-бюджеты — срез 6.
 

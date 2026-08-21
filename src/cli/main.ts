@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import { realpathSync } from 'node:fs';
 import { access } from 'node:fs/promises';
 import { parseArgs as parseNodeArgs } from 'node:util';
@@ -24,9 +25,9 @@ export interface CliOptions {
 /** Ошибка в том, как запустили команду; текст рассчитан на показ пользователю. */
 export class CliError extends Error {}
 
-const USAGE = `gource-reborn — интерактивная визуализация истории git
+const USAGE = `paseka — интерактивная визуализация истории git
 
-  npx gource-reborn [путь]
+  npx github:joezavtra/paseka [путь]
 
   --port <n>   порт локального сервера (по умолчанию 7420)
   --no-open    не открывать браузер

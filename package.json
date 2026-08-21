@@ -1,16 +1,37 @@
 {
-  "name": "gource-reborn",
+  "name": "paseka",
   "version": "0.1.0",
-  "description": "Интерактивная визуализация истории git-репозитория",
+  "description": "Интерактивная визуализация истории git-репозитория / Interactive git history visualization in the browser",
+  "keywords": [
+    "git",
+    "git-history",
+    "visualization",
+    "canvas",
+    "force-directed",
+    "cli",
+    "developer-tools",
+    "gource",
+    "codeflower"
+  ],
+  "homepage": "https://github.com/joezavtra/paseka#readme",
+  "bugs": {
+    "url": "https://github.com/joezavtra/paseka/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/joezavtra/paseka.git"
+  },
+  "license": "MIT",
+  "author": "Joe Zavtra, sstff corp",
   "type": "module",
   "bin": {
-    "gource-reborn": "dist/node/cli/main.js"
+    "paseka": "dist/node/cli/main.js"
   },
   "files": [
     "dist"
   ],
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "scripts": {
     "build": "npm run build:node && npm run build:web",
@@ -19,7 +40,8 @@
     "dev": "tsx src/cli/main.ts",
     "test": "vitest run",
     "test:e2e": "playwright test",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "prepare": "npm run build"
   },
   "devDependencies": {
     "@playwright/test": "^1.62.1",

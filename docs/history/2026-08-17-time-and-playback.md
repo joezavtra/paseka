@@ -1,6 +1,5 @@
 # Время и воспроизведение — план реализации
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Дерево кода растёт во времени: узлы входят в симуляцию при создании файла и выходят при удалении, есть воспроизведение с паузой, скоростью и перемоткой слайдером.
 
@@ -8,7 +7,7 @@
 
 **Tech Stack:** TypeScript (strict, ESM), Node 20+, Vite, d3-force, vitest, Playwright.
 
-**Spec:** [2026-08-17-gource-reborn-design.md](../specs/2026-08-17-gource-reborn-design.md) — этот план реализует срез 3 из раздела «Порядок реализации» и закрывает долг по `--no-merges` из §5.
+**Spec:** [docs/design.md](../design.md) — этот план реализует срез 3 из раздела «Порядок реализации» и закрывает долг по `--no-merges` из §5.
 
 **Scope:** авторы с лучами и вспышками (срез 4), инспектор, фильтры и видимость поддеревьев (срез 5), экспорт и перф-бюджеты (срез 6) сюда не входят.
 

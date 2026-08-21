@@ -61,7 +61,7 @@ describe('streamCommits', () => {
   });
 
   it('даёт RepoError с текстом от git, если git log завершился ненулевым кодом', async () => {
-    const dir = await mkdtemp(join(tmpdir(), 'gource-reborn-not-a-repo-'));
+    const dir = await mkdtemp(join(tmpdir(), 'paseka-not-a-repo-'));
     try {
       let caught: unknown;
       try {
@@ -80,7 +80,7 @@ describe('streamCommits', () => {
   });
 
   it('репортит RepoError при недоступном git и не роняет процесс необработанным реджектом', async () => {
-    const emptyPathDir = await mkdtemp(join(tmpdir(), 'gource-reborn-empty-path-'));
+    const emptyPathDir = await mkdtemp(join(tmpdir(), 'paseka-empty-path-'));
     const originalPath = process.env.PATH;
     const unhandled: unknown[] = [];
     const onUnhandledRejection = (reason: unknown) => {

@@ -402,7 +402,7 @@ async function start(): Promise<void> {
   let lastInspectorRebuildMs = -Infinity;
 
   /** Ключ хранилища у настроек физики один на все репозитории: это настройки инструмента, а не проекта. */
-  const PHYSICS_KEY = 'gource-reborn:physics';
+  const PHYSICS_KEY = 'paseka:physics';
 
   function loadPhysics(): LayoutParams {
     try {
@@ -756,7 +756,7 @@ async function start(): Promise<void> {
   }
 
   /** Ключ хранилища привязан к репозиторию: у разных проектов свой набор. */
-  const VISIBILITY_KEY = `gource-reborn:visibility:${pack.meta.repoName}`;
+  const VISIBILITY_KEY = `paseka:visibility:${pack.meta.repoName}`;
 
   // Разбор и сборка содержимого живут в кодеке рядом с разрешением видимости —
   // там их достаёт юнит-тест. Здесь остаётся только само хранилище: в приватном

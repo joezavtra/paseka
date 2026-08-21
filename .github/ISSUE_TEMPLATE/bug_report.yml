@@ -1,0 +1,47 @@
+name: Отчёт об ошибке
+description: Что-то работает не так, как ожидалось
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Баг визуализатора почти невозможно воспроизвести, не зная, на каком
+        репозитории и в каком окружении он случился. Вывод `paseka --stats`
+        даёт нужную сводку одной командой и не раскрывает ни строчки вашего кода.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: Что произошло
+      description: Что вы делали, что ожидали увидеть и что увидели вместо этого
+    validations:
+      required: true
+  - type: input
+    id: env
+    attributes:
+      label: Окружение
+      description: ОС, вывод `node -v` и `git --version`
+      placeholder: macOS 15.3, node v24.1.0, git 2.47.0
+    validations:
+      required: true
+  - type: dropdown
+    id: how
+    attributes:
+      label: Как запускали
+      options:
+        - npx github:joezavtra/paseka
+        - из исходников (npm run build и node dist/node/cli/main.js)
+        - иначе (опишите ниже)
+    validations:
+      required: true
+  - type: textarea
+    id: stats
+    attributes:
+      label: Сводка по репозиторию
+      description: Вывод `paseka --stats` в той папке, где воспроизводится
+      render: text
+  - type: textarea
+    id: logs
+    attributes:
+      label: Вывод терминала и консоли браузера
+      description: Сообщения об ошибках, если они были
+      render: text

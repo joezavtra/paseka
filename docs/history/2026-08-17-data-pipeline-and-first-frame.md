@@ -1,14 +1,13 @@
 # Конвейер данных и первый кадр — план реализации
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** `npx gource-reborn` в папке git-репозитория парсит историю, поднимает локальный сервер и показывает в браузере force-directed дерево файлов на состоянии HEAD.
+**Goal:** `npx paseka` в папке git-репозитория парсит историю, поднимает локальный сервер и показывает в браузере force-directed дерево файлов на состоянии HEAD.
 
 **Architecture:** CLI стримингово читает `git log --raw --numstat`, собирает компактный бинарный pack (пулы строк + typed arrays + CSR-индексы), сервер отдаёт его одним запросом. Браузер декодирует pack без копирования, вычисляет живые на HEAD узлы, гоняет d3-force в Web Worker и рисует результат на canvas 2D.
 
 **Tech Stack:** TypeScript (strict, ESM), Node 20+, Vite, d3-force, vitest, Playwright. Node-часть — только `node:`-встроенные модули, без runtime-зависимостей.
 
-**Scope:** это первый из шести планов по спеке [2026-08-17-gource-reborn-design.md](../specs/2026-08-17-gource-reborn-design.md) — срезы 1 и 2 из раздела «Порядок реализации». Время, авторы, фильтры, видимость поддеревьев, инспектор и экспорт идут отдельными планами и здесь намеренно отсутствуют.
+**Scope:** это первый из шести планов по спеке [docs/design.md](../design.md) — срезы 1 и 2 из раздела «Порядок реализации». Время, авторы, фильтры, видимость поддеревьев, инспектор и экспорт идут отдельными планами и здесь намеренно отсутствуют.
 
 ## Global Constraints
 
@@ -79,11 +78,11 @@ npm i -D typescript vite vitest tsx @types/node d3-force @types/d3-force
 
 ```json
 {
-  "name": "gource-reborn",
+  "name": "paseka",
   "version": "0.1.0",
   "description": "Интерактивная визуализация истории git-репозитория",
   "type": "module",
-  "bin": { "gource-reborn": "dist/node/cli/main.js" },
+  "bin": { "paseka": "dist/node/cli/main.js" },
   "files": ["dist"],
   "engines": { "node": ">=20" },
   "scripts": {
@@ -1527,7 +1526,7 @@ export interface CliOptions {
 
 const USAGE = `gource-reborn — интерактивная визуализация истории git
 
-  npx gource-reborn [путь]
+  npx paseka [путь]
 
   --port <n>   порт локального сервера (по умолчанию 7420)
   --no-open    не открывать браузер

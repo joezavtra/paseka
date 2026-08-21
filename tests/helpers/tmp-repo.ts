@@ -23,7 +23,7 @@ const created: string[] = [];
  * Без realpath сравнение корня репозитория со строкой из git никогда не сойдётся.
  */
 export async function makeRepo(commits: FixtureCommit[]): Promise<string> {
-  const root = await realpath(await mkdtemp(join(tmpdir(), 'gource-reborn-')));
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'paseka-')));
   created.push(root);
   const git = (args: string[], env: NodeJS.ProcessEnv = {}) =>
     run('git', args, { cwd: root, env: { ...process.env, ...env } });

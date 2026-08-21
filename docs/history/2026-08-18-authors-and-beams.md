@@ -1,6 +1,5 @@
 # Авторы, лучи и вспышки — план реализации
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Над деревом кода появляются контрибьюторы: значок с инициалами, луч к каждому файлу, которого автор коснулся в текущем коммите, и вспышка на самом файле.
 
@@ -8,7 +7,7 @@
 
 **Tech Stack:** TypeScript (strict, ESM), Node 20+, Vite, vitest, happy-dom для тестов с DOM, Playwright.
 
-**Spec:** [2026-08-17-gource-reborn-design.md](../specs/2026-08-17-gource-reborn-design.md) — срез 4 из раздела «Порядок реализации», требования в §7 и §11.
+**Spec:** [docs/design.md](../design.md) — срез 4 из раздела «Порядок реализации», требования в §7 и §11.
 
 **Scope:** инспектор, фильтры-гашение и видимость поддеревьев — срез 5; экспорт и перф-бюджеты — срез 6.
 

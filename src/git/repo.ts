@@ -35,7 +35,7 @@ export async function inspectRepo(cwd: string): Promise<RepoInfo> {
     root = await git(dir, ['rev-parse', '--show-toplevel']);
   } catch {
     throw new RepoError(
-      `${dir} не является git-репозиторием. Запустите gource-reborn внутри репозитория ` +
+      `${dir} не является git-репозиторием. Запустите paseka внутри репозитория ` +
         'или укажите путь к нему аргументом.',
     );
   }
