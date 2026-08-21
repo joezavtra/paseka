@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
+import { DEFAULT_LAYOUT_PARAMS } from '../../web/layout/params.js';
 import {
-  CHARGE_DISTANCE_MAX,
   buildActiveLinks,
   chargeStrengthFor,
   countChildren,
@@ -183,7 +183,28 @@ describe('chargeStrengthFor', () => {
   it('заряд близкодействующий, но не настолько, чтобы поддеревья слиплись', () => {
     // Ниже примерно 150 соседние кластеры перестают расходиться (замер в
     // докблоке константы), выше 400 — дерево снова растягивает само себя.
-    expect(CHARGE_DISTANCE_MAX).toBeGreaterThanOrEqual(150);
-    expect(CHARGE_DISTANCE_MAX).toBeLessThanOrEqual(400);
+    expect(DEFAULT_LAYOUT_PARAMS.chargeDistanceMax).toBeGreaterThanOrEqual(150);
+    expect(DEFAULT_LAYOUT_PARAMS.chargeDistanceMax).toBeLessThanOrEqual(400);
+  });
+});
+
+describe('силы принимают настройки', () => {
+  it('заряд считается по переданным настройкам, а не по умолчаниям', () => {
+    const params = { ...DEFAULT_LAYOUT_PARAMS, leafCharge: -1, dirCharge: -2, dirChargePerRadius: -3 };
+    expect(chargeStrengthFor(10, 0, params)).toBe(-1);
+    expect(chargeStrengthFor(10, 4, params)).toBe(-32);
+  });
+
+  it('длина и жёсткость ребра тоже', () => {
+    const params = { ...DEFAULT_LAYOUT_PARAMS, linkMin: 100, linkSpread: 0, linkMax: 500, chainStrength: 0.1, branchStrength: 0.2 };
+    expect(linkDistanceFor(1, params)).toBe(100);
+    expect(linkDistanceFor(50, params)).toBe(100);
+    expect(linkStrengthFor(1, params)).toBe(0.1);
+    expect(linkStrengthFor(9, params)).toBe(0.2);
+  });
+
+  it('без настроек берутся замеренные умолчания', () => {
+    expect(linkStrengthFor(1)).toBe(DEFAULT_LAYOUT_PARAMS.chainStrength);
+    expect(chargeStrengthFor(0, 0)).toBe(DEFAULT_LAYOUT_PARAMS.leafCharge);
   });
 });
