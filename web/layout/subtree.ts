@@ -11,6 +11,43 @@
  * на сцене она занимает ровно один кружок.
  */
 
+import { angularBudget, ringRadius, type ChildIndex, type ConeSettings } from './cones.js';
+
+/**
+ * Дети каждого пути одним плоским массивом: `items[start[p] .. start[p + 1])`.
+ *
+ * Нужен угловому плану: тот раскладывает детей по кольцу и обязан обходить их
+ * в фиксированном порядке, а из одного массива родителей порядок детей не
+ * достать иначе как повторным проходом по всему дереву на каждую папку.
+ *
+ * Дети внутри родителя выходят по возрастанию идентификатора, потому что
+ * заполняющий проход идёт по возрастанию пути. Порядок здесь не украшение:
+ * на нём держится обещание, что новый ребёнок встаёт в кольцо последним и не
+ * перетасовывает уже стоящих (см. planSectors).
+ */
+export function buildChildIndex(active: Uint8Array, parent: Uint32Array): ChildIndex {
+  const pathCount = active.length;
+  const start = new Uint32Array(pathCount + 1);
+  for (let path = 1; path < pathCount; path++) {
+    if (active[path] !== 1) continue;
+    const p = parent[path]!;
+    if (p === path || active[p] !== 1) continue;
+    start[p + 1] = start[p + 1]! + 1;
+  }
+  for (let path = 0; path < pathCount; path++) start[path + 1] = start[path + 1]! + start[path]!;
+
+  const items = new Uint32Array(start[pathCount]!);
+  const cursor = start.slice(0, pathCount);
+  for (let path = 1; path < pathCount; path++) {
+    if (active[path] !== 1) continue;
+    const p = parent[path]!;
+    if (p === path || active[p] !== 1) continue;
+    items[cursor[p]!] = path;
+    cursor[p] = cursor[p]! + 1;
+  }
+  return { start, items };
+}
+
 /** Результат обхода: всё индексируется идентификатором пути. */
 export interface SubtreeStats {
   /** Сумма площадей кружков поддерева, в квадратных пикселях мира. */
@@ -19,6 +56,12 @@ export interface SubtreeStats {
   leaves: Uint32Array;
   /** Радиус круга, в который поддерево укладывается. */
   footprint: Float32Array;
+  /**
+   * Расстояние, ближе которого ветвящиеся дети этого пути стоять не должны:
+   * иначе их конусы налезут друг на друга и секторов на всех не хватит. Ноль
+   * значит «ограничения нет».
+   */
+  ring: Float64Array;
 }
 
 /**
@@ -77,11 +120,45 @@ export function subtreeStats(
   radius: Float32Array,
   padding: number,
   packFill: number,
+  children: ChildIndex,
+  settings: ConeSettings,
 ): SubtreeStats {
   const pathCount = active.length;
   const area = new Float64Array(pathCount);
   const leaves = new Uint32Array(pathCount);
   const footprint = new Float32Array(pathCount);
+  const ring = new Float64Array(pathCount);
+  /** Следы ветвящихся детей одного узла; массив переиспользуется на каждый узел. */
+  const branchFootprints: number[] = [];
+
+  /**
+   * Поправка на кольцо: папка обязана вмещать своих ветвящихся детей там, где
+   * они на самом деле встанут.
+   *
+   * Площадная модель отвечает на вопрос «сколько места нужно кружкам», а
+   * угловая — на другой: «насколько далеко их приходится отодвинуть, чтобы
+   * хватило углов». Оба ответа верны, и брать надо больший. Если этого не
+   * сделать, папка выдаст детям кольцо, в которое сама не помещается, и сборка
+   * группы потащит их обратно внутрь — против только что выданного сектора.
+   */
+  const applyRing = (path: number): void => {
+    branchFootprints.length = 0;
+    let maxBranch = 0;
+    const from = children.start[path]!;
+    const to = children.start[path + 1]!;
+    for (let i = from; i < to; i++) {
+      const child = children.items[i]!;
+      if (children.start[child + 1]! === children.start[child]!) continue;
+      const value = footprint[child]!;
+      branchFootprints.push(value);
+      if (value > maxBranch) maxBranch = value;
+    }
+    if (branchFootprints.length === 0) return;
+    const radiusOfRing = ringRadius(branchFootprints, angularBudget(path === 0, settings));
+    ring[path] = radiusOfRing;
+    const needed = radiusOfRing + maxBranch;
+    if (needed > footprint[path]!) footprint[path] = needed;
+  };
   /** След самого крупного ребёнка; заполняется потомками по ходу обхода. */
   const maxChild = new Float32Array(pathCount);
   /** Есть ли у пути рисуемые потомки: лист — тот, у кого их нет. */
@@ -97,6 +174,7 @@ export function subtreeStats(
     if (active[path] !== 1) continue;
     const own = Math.max(0, radius[path]!) + padding;
     footprint[path] = footprintRadius(area[path]! - own * own, maxChild[path]!, own, packFill);
+    applyRing(path);
     if (hasChildren[path] === 0) leaves[path] = 1;
 
     const p = parent[path]!;
@@ -110,8 +188,9 @@ export function subtreeStats(
   if (pathCount > 0 && active[0] === 1) {
     const own = Math.max(0, radius[0]!) + padding;
     footprint[0] = footprintRadius(area[0]! - own * own, maxChild[0]!, own, packFill);
+    applyRing(0);
     if (hasChildren[0] === 0) leaves[0] = 1;
   }
 
-  return { area, leaves, footprint };
+  return { area, leaves, footprint, ring };
 }

@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import {
+  forceCones,
   forceFolderCohesion,
   forceGroupRepel,
+  type ConeState,
   type FolderState,
   type MutableNode,
 } from '../../web/layout/forces.js';

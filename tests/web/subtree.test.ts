@@ -1,22 +1,92 @@
 import { describe, it, expect } from 'vitest';
-import { footprintRadius, subtreeStats } from '../../web/layout/subtree.js';
+import { buildChildIndex, footprintRadius, subtreeStats } from '../../web/layout/subtree.js';
+import type { ConeSettings } from '../../web/layout/cones.js';
 
 const PADDING = 2;
 const PACK = 0.8;
+const SECTORS: ConeSettings = { backGuard: Math.PI / 12, branchBudget: 0.75 };
 
 /**
  * Дерево строится литералами прямо в тесте, как в соседних тестах раскладки:
  * `parent[i]` — родитель пути i, у корня родитель — он сам.
  */
 function stats(parent: number[], radius: number[], active?: number[]) {
+  const mask = Uint8Array.from(active ?? parent.map(() => 1));
+  const tree = Uint32Array.from(parent);
   return subtreeStats(
-    Uint8Array.from(active ?? parent.map(() => 1)),
-    Uint32Array.from(parent),
+    mask,
+    tree,
     Float32Array.from(radius),
     PADDING,
     PACK,
+    buildChildIndex(mask, tree),
+    SECTORS,
   );
 }
+
+describe('subtreeStats: кольцо ветвящихся детей', () => {
+  it('единственной подпапке кольца не выдаётся', () => {
+    // Транзитная цепочка каталогов: конкурировать за угол не с кем, и любое
+    // требование отойти растянуло бы цепочку ровно тем растягиванием, ради
+    // избавления от которого длина ребра стала выводиться из следов.
+    const s = stats([0, 0, 1, 2], [3, 3, 3, 30]);
+    expect(s.ring[0]).toBe(0);
+    expect(s.ring[1]).toBe(0);
+    expect(s.ring[2]).toBe(0);
+  });
+
+  it('файлы кольца не требуют: оно про подпапки', () => {
+    const s = stats([0, 0, 0, 0], [3, 20, 20, 20]);
+    expect(s.ring[0]).toBe(0);
+  });
+
+  it('две подпапки требуют кольца и раздвигают след родителя', () => {
+    // 0 → 1 и 2, у каждой по файлу: обе ветвящиеся, значит конкурируют за угол.
+    const parent = [0, 0, 0, 1, 2];
+    const radius = [3, 3, 3, 30, 30];
+    const s = stats(parent, radius);
+    expect(s.ring[0]!).toBeGreaterThan(0);
+    expect(s.footprint[0]!).toBeGreaterThanOrEqual(s.ring[0]! + s.footprint[1]!);
+  });
+
+  it('широкое ветвление раздувает след сверх площадной модели', () => {
+    // При двух-трёх подпапках обе модели дают почти одно и то же, и разницу на
+    // такой фикстуре не поймать. Сорок подпапок разводят их вдвое: кружки
+    // укладываются в диск, а конусы требуют кольца, и брать надо большее.
+    const parent = [0];
+    const radius = [3];
+    for (let i = 0; i < 40; i++) {
+      parent.push(0);
+      radius.push(3);
+      parent.push(1 + i * 2);
+      radius.push(30);
+    }
+    const s = stats(parent, radius);
+    const packed = Math.sqrt((s.area[0]! - 25) / 0.8);
+    expect(s.ring[0]!).toBeGreaterThan(0);
+    expect(s.footprint[0]!).toBeGreaterThan(packed * 1.5);
+    expect(s.footprint[0]!).toBeCloseTo(s.ring[0]! + s.footprint[1]!, 4);
+  });
+
+  it('кольцо не уменьшает след, посчитанный по площади', () => {
+    // Обе модели верны, брать надо большую: площадная отвечает, сколько места
+    // нужно кружкам, угловая — насколько далеко их пришлось отодвинуть.
+    const parent = [0, 0, 0, 1, 2];
+    const radius = [3, 3, 3, 40, 40];
+    const s = stats(parent, radius);
+    const packed = Math.sqrt((s.area[0]! - 25) / 0.8);
+    expect(s.footprint[0]!).toBeGreaterThanOrEqual(Math.min(packed, s.ring[0]! + s.footprint[1]!) - 1e-6);
+  });
+
+  it('скрытая подпапка в кольцо не считается', () => {
+    const parent = [0, 0, 0, 1, 2];
+    const radius = [3, 3, 3, 30, 30];
+    const visible = stats(parent, radius);
+    const hidden = stats(parent, radius, [1, 1, 0, 1, 0]);
+    expect(visible.ring[0]!).toBeGreaterThan(0);
+    expect(hidden.ring[0]).toBe(0);
+  });
+});
 
 describe('footprintRadius', () => {
   it('одинокий кружок занимает ровно себя, без наценки за плотность', () => {

@@ -4,9 +4,12 @@ import {
   containmentDeltas,
   MIN_GROUP_LEAVES,
   propagateDown,
+  propagateRotation,
+  repelCones,
   repelSiblings,
   siblingPairs,
 } from '../../web/layout/groups.js';
+import { buildChildIndex } from '../../web/layout/subtree.js';
 
 /** Дерево литералами, как в соседних тестах раскладки: parent[i] — родитель пути i. */
 const tree = (parent: number[], active?: number[]) => ({
@@ -227,5 +230,205 @@ describe('propagateDown', () => {
     const pushY = new Float64Array(4);
     propagateDown(active, parent, pushX, pushY);
     expect(pushX[3]).toBe(0);
+  });
+});
+
+describe('propagateRotation', () => {
+  const apply = (parent: number[], x: number[], y: number[], spin: number[]) => {
+    const active = Uint8Array.from(parent.map(() => 1));
+    const px = Float64Array.from(x);
+    const py = Float64Array.from(y);
+    const vx = new Float64Array(parent.length);
+    const vy = new Float64Array(parent.length);
+    propagateRotation(
+      active,
+      Uint32Array.from(parent),
+      px,
+      py,
+      Float64Array.from(spin),
+      new Float64Array(parent.length),
+      new Float64Array(parent.length),
+      new Float64Array(parent.length),
+      vx,
+      vy,
+    );
+    return { vx, vy };
+  };
+
+  it('поворот вокруг родителя смещает по касательной, а не по радиусу', () => {
+    // Корень(0) в нуле, ребёнок(1) на оси X: поворот обязан двинуть его по Y.
+    const { vx, vy } = apply([0, 0], [0, 100], [0, 0], [0, 0.01]);
+    expect(vx[1]).toBeCloseTo(0, 9);
+    expect(vy[1]).toBeCloseTo(1, 9);
+  });
+
+  it('поддерево едет вместе с папкой, сохраняя внутренние расстояния', () => {
+    // Корень(0) → папка(1) на (100,0) → файл(2) на (110,0).
+    const { vx, vy } = apply([0, 0, 1], [0, 100, 110], [0, 0, 0], [0, 0.01, 0]);
+    expect(vy[1]).toBeCloseTo(1, 9);
+    expect(vy[2]).toBeCloseTo(1.1, 9);
+    // В первом порядке это жёсткий поворот: расстояние внутри не меняется.
+    expect(vx[2]! - vx[1]!).toBeCloseTo(0, 9);
+  });
+
+  it('повороты деда и папки складываются', () => {
+    const only = apply([0, 0, 1], [0, 100, 110], [0, 0, 0], [0, 0, 0.01]);
+    const both = apply([0, 0, 1], [0, 100, 110], [0, 0, 0], [0, 0.01, 0.01]);
+    expect(both.vy[2]!).toBeCloseTo(only.vy[2]! + 1.1, 9);
+  });
+
+  it('через мёртвого предка поворот не течёт', () => {
+    const parent = Uint32Array.from([0, 0, 1]);
+    const active = Uint8Array.from([1, 0, 1]);
+    const vx = new Float64Array(3);
+    const vy = new Float64Array(3);
+    propagateRotation(
+      active,
+      parent,
+      Float64Array.from([0, 100, 110]),
+      new Float64Array(3),
+      Float64Array.from([0, 0.01, 0]),
+      new Float64Array(3),
+      new Float64Array(3),
+      new Float64Array(3),
+      vx,
+      vy,
+    );
+    expect(vy[2]).toBe(0);
+  });
+});
+
+describe('repelCones', () => {
+  /**
+   * Корень(0) слева, папка(1) в центре, две её подпапки(2, 3) с файлами(4, 5).
+   * Направление на родителя из папки — это π, и оно тоже занято: туда уходит
+   * ребро вверх.
+   */
+  const scene = (angleA: number, angleB: number, distance = 200) => {
+    const parent = Uint32Array.from([0, 0, 1, 1, 2, 3]);
+    const active = Uint8Array.from([1, 1, 1, 1, 1, 1]);
+    const footprint = Float32Array.from([1000, 300, 40, 40, 3, 3]);
+    const children = buildChildIndex(active, parent);
+    const x = Float64Array.from([
+      -300, 0, Math.cos(angleA) * distance, Math.cos(angleB) * distance, 0, 0,
+    ]);
+    const y = Float64Array.from([0, 0, Math.sin(angleA) * distance, Math.sin(angleB) * distance, 0, 0]);
+    // Файлы стоят рядом со своими подпапками, а не в них: сядь они в ту же
+    // точку, и проверка «файлы в разведении не участвуют» проходила бы сама
+    // собой — нулевое расстояние отсеивается раньше всякой фильтрации.
+    x[4] = x[2]! + 30;
+    y[4] = y[2]! + 30;
+    x[5] = x[3]! + 30;
+    y[5] = y[3]! - 30;
+    return { parent, active, footprint, children, x, y, spin: new Float64Array(6) };
+  };
+
+  const repel = (s: ReturnType<typeof scene>, guard = 0, strength = 1, maxStep = 1e9) => {
+    repelCones(
+      s.active, s.parent, s.children, s.x, s.y, s.footprint, guard, strength, 1, maxStep, s.spin,
+    );
+    return s.spin;
+  };
+
+  it('разошедшиеся конусы не трогаются вовсе', () => {
+    // Сила контактная: молчит там, где расстановка и так годная, и потому не
+    // спорит ни с пружинами, ни с расталкиванием следов.
+    expect([...repel(scene(0.5, -0.5))]).toEqual([0, 0, 0, 0, 0, 0]);
+  });
+
+  it('налезшие конусы разводятся в разные стороны', () => {
+    const spin = repel(scene(0.1, -0.1));
+    expect(spin[2]!).toBeGreaterThan(0);
+    expect(spin[3]!).toBeLessThan(0);
+  });
+
+  it('зазор разводит и те конусы, что лишь коснулись', () => {
+    // Полуугол каждого — asin(40/200), то есть чуть больше 0.2 радиана.
+    const touching = 0.21;
+    expect(repel(scene(touching, -touching), 0)[2]).toBe(0);
+    expect(repel(scene(touching, -touching), 0.3)[2]!).toBeGreaterThan(0);
+  });
+
+  it('поддерево на направлении к родителю отодвигается с его пути', () => {
+    const s = scene(Math.PI - 0.05, 0);
+    const spin = repel(s, 0.1);
+    expect(spin[2]!).toBeLessThan(0);
+    expect(spin[3]).toBe(0);
+  });
+
+  it('конус в полную плоскость не разводится: свободного направления нет', () => {
+    const s = scene(0.1, -0.1);
+    s.footprint[2] = 500; // след подпапки накрыл её родителя
+    expect(repel(s)[2]).toBe(0);
+    expect(repel(s)[3]).toBe(0);
+  });
+
+  it('файлы в разведении конусов не участвуют', () => {
+    const s = scene(0.1, -0.1);
+    expect(repel(s)[4]).toBe(0);
+    expect(repel(s)[5]).toBe(0);
+  });
+
+  it('совпавшие направления разводятся детерминированно, а не в ноль', () => {
+    const first = repel(scene(0.3, 0.3));
+    const second = repel(scene(0.3, 0.3));
+    expect(first[2]!).toBeGreaterThan(0);
+    expect(first[3]!).toBeLessThan(0);
+    expect([...first]).toEqual([...second]);
+  });
+
+  it('потолок шага держит разведение', () => {
+    const s = scene(0, 0.01);
+    const capped = repel(s, 0, 1, 5);
+    expect(Math.abs(capped[2]!) * (200 + s.footprint[2]!)).toBeLessThanOrEqual(5 + 1e-9);
+  });
+
+  it('нулевая сила отключает разведение целиком', () => {
+    expect([...repel(scene(0.1, -0.1), 0, 0)]).toEqual([0, 0, 0, 0, 0, 0]);
+  });
+
+  it('скрытая подпапка в разведении не участвует', () => {
+    const s = scene(0.1, -0.1);
+    s.active[3] = 0;
+    const spin = repel(s, 0, 1, 1e9);
+    expect(spin[2]).toBe(0);
+    expect(spin[3]).toBe(0);
+  });
+});
+
+describe('repelCones: файлы конусов не имеют', () => {
+  it('файл с подпапкой не разводится: конусы — это про подпапки', () => {
+    // Корень(0) → папка(1) → подпапка(2) с файлом(4) и файл(3) на том же
+    // направлении. Конус тут ровно один, и разводить его не с чем. Выталкивать
+    // файлы из чужих конусов было замерено отдельной силой и не окупилось:
+    // пересечений это не убавляло ни на десятую процента.
+    const parent = Uint32Array.from([0, 0, 1, 1, 2]);
+    const active = Uint8Array.from([1, 1, 1, 1, 1]);
+    const footprint = Float32Array.from([1000, 400, 40, 3, 3]);
+    const children = buildChildIndex(active, parent);
+    const x = Float64Array.from([-300, 0, 200, Math.cos(0.05) * 300, 230]);
+    const y = Float64Array.from([0, 0, 0, Math.sin(0.05) * 300, 20]);
+    const spin = new Float64Array(5);
+    repelCones(active, parent, children, x, y, footprint, 0, 1, 1, 1e9, spin);
+    expect([...spin]).toEqual([0, 0, 0, 0, 0]);
+  });
+});
+
+describe('repelCones: защита ребра вверх', () => {
+  it('единственная подпапка тоже уходит с пути ребра вверх', () => {
+    // Разводить её не с кем, но ребро вверх она перекрывает не хуже прочих, и
+    // проверка «меньше двух подпапок — пропускаем» эту защиту бы отменила.
+    const parent = Uint32Array.from([0, 0, 1, 2]);
+    const active = Uint8Array.from([1, 1, 1, 1]);
+    const footprint = Float32Array.from([1000, 300, 40, 3]);
+    const children = buildChildIndex(active, parent);
+    const angle = Math.PI - 0.05;
+    const x = Float64Array.from([-300, 0, Math.cos(angle) * 200, 0]);
+    const y = Float64Array.from([0, 0, Math.sin(angle) * 200, 0]);
+    x[3] = x[2]!;
+    y[3] = y[2]!;
+    const spin = new Float64Array(4);
+    repelCones(active, parent, children, x, y, footprint, 0.1, 1, 1, 1e9, spin);
+    expect(spin[2]!).toBeLessThan(0);
   });
 });

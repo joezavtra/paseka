@@ -15,6 +15,8 @@
  * а вся математика проверяется тестами без d3 и без `self`.
  */
 
+import { requiredHalfAngle, wrapPi, type ChildIndex } from './cones.js';
+
 /**
  * Минимальное число файлов, при котором папка участвует в расталкивании.
  *
@@ -251,5 +253,164 @@ export function propagateDown(
     if (p === path || active[p] !== 1) continue;
     pushX[path] += pushX[p]!;
     pushY[path] += pushY[p]!;
+  }
+}
+
+/**
+ * Раздаёт повороты вниз по дереву, не заводя списков членства.
+ *
+ * Повороты предков складываются линейно, и это позволяет обойтись тремя
+ * числами на узел вместо обхода поддеревьев. Поворот узла `m` на угол δ вокруг
+ * опоры `p` смещает его на δ·J(m − p), где J — поворот вектора на прямой угол.
+ * Сумма по всем предкам сворачивается: Σ δ·J(m − p) = J(S·m − T), где S — сумма
+ * углов, а T — сумма углов, взвешенных положением опор. Дальше каждый узел
+ * считает своё смещение сам, зная только эти две величины и себя.
+ */
+export function propagateRotation(
+  active: Uint8Array,
+  parent: Uint32Array,
+  x: Float64Array,
+  y: Float64Array,
+  spin: Float64Array,
+  sum: Float64Array,
+  torqueX: Float64Array,
+  torqueY: Float64Array,
+  vx: Float64Array,
+  vy: Float64Array,
+): void {
+  const pathCount = active.length;
+  for (let path = 0; path < pathCount; path++) {
+    const p = parent[path]!;
+    const turn = active[path] === 1 && p !== path ? spin[path]! : 0;
+    sum[path] = turn;
+    torqueX[path] = turn * x[p]!;
+    torqueY[path] = turn * y[p]!;
+  }
+
+  for (let path = 1; path < pathCount; path++) {
+    if (active[path] !== 1) continue;
+    const p = parent[path]!;
+    if (p === path || active[p] !== 1) continue;
+    sum[path] += sum[p]!;
+    torqueX[path] += torqueX[p]!;
+    torqueY[path] += torqueY[p]!;
+  }
+
+  for (let path = 1; path < pathCount; path++) {
+    if (active[path] !== 1) continue;
+    const total = sum[path]!;
+    if (total === 0 && torqueX[path] === 0 && torqueY[path] === 0) continue;
+    vx[path] += torqueY[path]! - total * y[path]!;
+    vy[path] += total * x[path]! - torqueX[path]!;
+  }
+}
+
+/**
+ * Разводит конусы подпапок одного родителя по контакту — как расталкивание
+ * следов, только в угловой мере.
+ *
+ * Отличие от выдачи секторов принципиальное, и оно замерено. Выданный сектор —
+ * это предписание встать в определённое место круга, а порядок в круге берётся
+ * из идентификаторов путей, то есть из истории репозитория. Такому порядку
+ * нечего сказать о том, где вокруг уже стоят двоюродные поддеревья, и
+ * поддерево, добираясь до своего места, протаскивается сквозь чужие. Здесь
+ * порядок не предписан вовсе: сила включается только там, где конусы
+ * фактически налезли, и разводит их кратчайшим путём, оставляя расстановку
+ * такой, какую нашла остальная физика.
+ *
+ * Направление на родителя защищается тем же правилом: туда уходит ребро вверх,
+ * и поддерево на его пути пересекало бы его гарантированно.
+ */
+export function repelCones(
+  active: Uint8Array,
+  parent: Uint32Array,
+  children: ChildIndex,
+  x: Float64Array,
+  y: Float64Array,
+  footprint: Float32Array,
+  guard: number,
+  strength: number,
+  alpha: number,
+  maxStep: number,
+  spin: Float64Array,
+): void {
+  if (strength <= 0) return;
+  const pathCount = active.length;
+  const ids: number[] = [];
+  const angles: number[] = [];
+  const halves: number[] = [];
+  const reaches: number[] = [];
+
+  /**
+   * Копит поворот одной подпапки, зажимая его потолком линейного сдвига самой
+   * дальней точки её поддерева. Замыкание заводится один раз на весь проход, а
+   * не на каждого родителя: массивы под ним переиспользуются, и полторы тысячи
+   * замыканий за тик были бы ровно тем мусором, ради избавления от которого
+   * рабочие массивы вынесены в initialize.
+   */
+  const turn = (index: number, amount: number): void => {
+    const limit = reaches[index]! > 0 ? Math.max(0, maxStep) / reaches[index]! : 0;
+    const capped = Math.min(Math.abs(amount), limit);
+    spin[ids[index]!] += amount >= 0 ? capped : -capped;
+  };
+
+  for (let node = 0; node < pathCount; node++) {
+    if (active[node] !== 1) continue;
+    const from = children.start[node]!;
+    const to = children.start[node + 1]!;
+    if (to === from) continue;
+
+    ids.length = 0;
+    angles.length = 0;
+    halves.length = 0;
+    reaches.length = 0;
+    for (let i = from; i < to; i++) {
+      const child = children.items[i]!;
+      if (active[child] !== 1) continue;
+      if (children.start[child + 1]! === children.start[child]!) continue;
+      const dx = x[child]! - x[node]!;
+      const dy = y[child]! - y[node]!;
+      const distance = Math.hypot(dx, dy);
+      if (distance <= 0) continue;
+      const half = requiredHalfAngle(footprint[child]!, distance);
+      // Конус в полную плоскость разводить бессмысленно: свободного
+      // направления нет, и любой поворот только гоняет поддерево по кругу.
+      if (half >= Math.PI) continue;
+      ids.push(child);
+      angles.push(Math.atan2(dy, dx));
+      halves.push(half);
+      reaches.push(distance + Math.max(0, footprint[child]!));
+    }
+    if (ids.length === 0) continue;
+
+    // Предохранитель на вырожденного родителя — тот же, что у расталкивания
+    // следов: тысяча подпапок дала бы полмиллиона пар на тик. Защиту ребра
+    // вверх он не отменяет: она стоит одного прохода и нужна тем более.
+    const pairs = ids.length <= MAX_SIBLING_GROUPS ? ids.length : 0;
+    for (let i = 0; i < pairs; i++) {
+      for (let j = i + 1; j < pairs; j++) {
+        const offset = wrapPi(angles[j]! - angles[i]!);
+        const overlap = halves[i]! + halves[j]! + guard - Math.abs(offset);
+        if (overlap <= 0) continue;
+        // Совпавшие направления разводятся сами собой и детерминированно:
+        // при нуле сравнение ложно, младший по порядку идёт в одну сторону,
+        // старший в другую. Math.random в проекте запрещён, а особая ветка
+        // здесь была бы мёртвой.
+        const push = (overlap / 2) * strength * alpha;
+        turn(i, offset > 0 ? -push : push);
+        turn(j, offset > 0 ? push : -push);
+      }
+    }
+
+    // Ребро вверх: направление на родителя занято, и поддерево там мешает.
+    const up = parent[node]!;
+    if (up === node || active[up] !== 1) continue;
+    const upAngle = Math.atan2(y[up]! - y[node]!, x[up]! - x[node]!);
+    for (let i = 0; i < ids.length; i++) {
+      const offset = wrapPi(angles[i]! - upAngle);
+      const overlap = halves[i]! + guard - Math.abs(offset);
+      if (overlap <= 0) continue;
+      turn(i, (offset > 0 ? overlap : -overlap) * strength * alpha);
+    }
   }
 }
