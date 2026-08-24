@@ -11,6 +11,43 @@
  * на сцене она занимает ровно один кружок.
  */
 
+import type { ChildIndex } from './sectors.js';
+
+/**
+ * Дети каждого пути одним плоским массивом: `items[start[p] .. start[p + 1])`.
+ *
+ * Нужен угловому плану: тот раскладывает детей по кольцу и обязан обходить их
+ * в фиксированном порядке, а из одного массива родителей порядок детей не
+ * достать иначе как повторным проходом по всему дереву на каждую папку.
+ *
+ * Дети внутри родителя выходят по возрастанию идентификатора, потому что
+ * заполняющий проход идёт по возрастанию пути. Порядок здесь не украшение:
+ * на нём держится обещание, что новый ребёнок встаёт в кольцо последним и не
+ * перетасовывает уже стоящих (см. planSectors).
+ */
+export function buildChildIndex(active: Uint8Array, parent: Uint32Array): ChildIndex {
+  const pathCount = active.length;
+  const start = new Uint32Array(pathCount + 1);
+  for (let path = 1; path < pathCount; path++) {
+    if (active[path] !== 1) continue;
+    const p = parent[path]!;
+    if (p === path || active[p] !== 1) continue;
+    start[p + 1] = start[p + 1]! + 1;
+  }
+  for (let path = 0; path < pathCount; path++) start[path + 1] = start[path + 1]! + start[path]!;
+
+  const items = new Uint32Array(start[pathCount]!);
+  const cursor = start.slice(0, pathCount);
+  for (let path = 1; path < pathCount; path++) {
+    if (active[path] !== 1) continue;
+    const p = parent[path]!;
+    if (p === path || active[p] !== 1) continue;
+    items[cursor[p]!] = path;
+    cursor[p] = cursor[p]! + 1;
+  }
+  return { start, items };
+}
+
 /** Результат обхода: всё индексируется идентификатором пути. */
 export interface SubtreeStats {
   /** Сумма площадей кружков поддерева, в квадратных пикселях мира. */
