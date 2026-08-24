@@ -11,7 +11,7 @@
  * на сцене она занимает ровно один кружок.
  */
 
-import { angularBudget, ringRadius, type ChildIndex, type SectorSettings } from './sectors.js';
+import { angularBudget, ringRadius, type ChildIndex, type ConeSettings } from './cones.js';
 
 /**
  * Дети каждого пути одним плоским массивом: `items[start[p] .. start[p + 1])`.
@@ -121,7 +121,7 @@ export function subtreeStats(
   padding: number,
   packFill: number,
   children: ChildIndex,
-  settings: SectorSettings,
+  settings: ConeSettings,
 ): SubtreeStats {
   const pathCount = active.length;
   const area = new Float64Array(pathCount);

@@ -16,8 +16,14 @@ import {
   radialShare,
 } from './graph.js';
 import { buildChildIndex, subtreeStats, type SubtreeStats } from './subtree.js';
-import type { ChildIndex, SectorSettings } from './sectors.js';
-import { forceFolderCohesion, forceGroupRepel, type FolderState } from './forces.js';
+import type { ChildIndex, ConeSettings } from './cones.js';
+import {
+  forceCones,
+  forceFolderCohesion,
+  forceGroupRepel,
+  type ConeState,
+  type FolderState,
+} from './forces.js';
 import { DEFAULT_LAYOUT_PARAMS, sanitizeParams, type LayoutParams } from './params.js';
 import { NodeStore, type StoreNode } from './node-store.js';
 import type { FromWorker, ToWorker } from './protocol.js';
@@ -69,16 +75,15 @@ let lastActive: Uint8Array = new Uint8Array(0);
 let lastRadius: Float32Array = new Float32Array(0);
 /**
  * Дети каждого пути последнего `update`. Нужны и следу (кольцо считается по
- * ветвящимся детям), и угловому плану, поэтому строятся один раз на состав.
+ * ветвящимся детям), и угловой силе, поэтому строятся один раз на состав.
  */
 let childIndex: ChildIndex = { start: new Uint32Array(1), items: new Uint32Array(0) };
 
 /** Угловая часть настроек: панель хранит зазор в градусах, геометрия — в радианах. */
-function sectorSettings(): SectorSettings {
+function coneSettings(): ConeSettings {
   return {
-    backGuard: (params.sectorBackGuard * Math.PI) / 180,
+    backGuard: (params.coneGap * Math.PI) / 180,
     branchBudget: params.branchBudget,
-    margin: params.sectorMargin,
   };
 }
 /**
@@ -97,7 +102,22 @@ const folders: FolderState = {
   gap: DEFAULT_LAYOUT_PARAMS.groupGap,
 };
 
-/** Переносит свежие следы и настройки в состояние, которое читают групповые силы. */
+/**
+ * Состояние угловой силы. Держится так же, как `folders`, и по той же причине:
+ * силу переинициализирует сам d3 при смене состава, и пересобирать её ради
+ * новых чисел не нужно.
+ */
+const cones: ConeState = {
+  active: new Uint8Array(0),
+  parent: new Uint32Array(0),
+  footprint: new Float32Array(0),
+  children: { start: new Uint32Array(1), items: new Uint32Array(0) },
+  strength: DEFAULT_LAYOUT_PARAMS.coneStrength,
+  maxStep: DEFAULT_LAYOUT_PARAMS.coneMaxStep,
+  guard: (DEFAULT_LAYOUT_PARAMS.coneGap * Math.PI) / 180,
+};
+
+/** Переносит свежие следы и настройки в состояния, которые читают силы по ссылке. */
 function syncFolders(): void {
   folders.active = lastActive;
   folders.parent = treeParent;
@@ -109,6 +129,14 @@ function syncFolders(): void {
     folders.leaves = stats.leaves;
     folders.area = stats.area;
   }
+
+  cones.active = lastActive;
+  cones.parent = treeParent;
+  cones.children = childIndex;
+  cones.strength = params.coneStrength;
+  cones.maxStep = params.coneMaxStep;
+  cones.guard = (params.coneGap * Math.PI) / 180;
+  if (stats) cones.footprint = stats.footprint;
 }
 
 /**
@@ -151,6 +179,7 @@ function applyForces(target: Simulation<StoreNode, SimulationLinkDatum<StoreNode
     )
     .force('groupRepel', forceGroupRepel(folders))
     .force('groupCohesion', forceFolderCohesion(folders))
+    .force('cones', forceCones(cones))
     .force(
       'link',
       forceLink<StoreNode, SimulationLinkDatum<StoreNode>>(lastLinks)
@@ -228,7 +257,7 @@ self.onmessage = (event: MessageEvent<ToWorker>) => {
         params.collidePadding,
         params.packFill,
         childIndex,
-        sectorSettings(),
+        coneSettings(),
       );
     }
     syncFolders();
@@ -296,7 +325,7 @@ self.onmessage = (event: MessageEvent<ToWorker>) => {
     params.collidePadding,
     params.packFill,
     childIndex,
-    sectorSettings(),
+    coneSettings(),
   );
   syncFolders();
   applyForces(simulation);

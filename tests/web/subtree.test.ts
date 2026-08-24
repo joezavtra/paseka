@@ -1,10 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { buildChildIndex, footprintRadius, subtreeStats } from '../../web/layout/subtree.js';
-import type { SectorSettings } from '../../web/layout/sectors.js';
+import type { ConeSettings } from '../../web/layout/cones.js';
 
 const PADDING = 2;
 const PACK = 0.8;
-const SECTORS: SectorSettings = { backGuard: Math.PI / 12, branchBudget: 0.75, margin: 0.25 };
+const SECTORS: ConeSettings = { backGuard: Math.PI / 12, branchBudget: 0.75 };
 
 /**
  * Дерево строится литералами прямо в тесте, как в соседних тестах раскладки:
@@ -47,6 +47,25 @@ describe('subtreeStats: кольцо ветвящихся детей', () => {
     const s = stats(parent, radius);
     expect(s.ring[0]!).toBeGreaterThan(0);
     expect(s.footprint[0]!).toBeGreaterThanOrEqual(s.ring[0]! + s.footprint[1]!);
+  });
+
+  it('широкое ветвление раздувает след сверх площадной модели', () => {
+    // При двух-трёх подпапках обе модели дают почти одно и то же, и разницу на
+    // такой фикстуре не поймать. Сорок подпапок разводят их вдвое: кружки
+    // укладываются в диск, а конусы требуют кольца, и брать надо большее.
+    const parent = [0];
+    const radius = [3];
+    for (let i = 0; i < 40; i++) {
+      parent.push(0);
+      radius.push(3);
+      parent.push(1 + i * 2);
+      radius.push(30);
+    }
+    const s = stats(parent, radius);
+    const packed = Math.sqrt((s.area[0]! - 25) / 0.8);
+    expect(s.ring[0]!).toBeGreaterThan(0);
+    expect(s.footprint[0]!).toBeGreaterThan(packed * 1.5);
+    expect(s.footprint[0]!).toBeCloseTo(s.ring[0]! + s.footprint[1]!, 4);
   });
 
   it('кольцо не уменьшает след, посчитанный по площади', () => {

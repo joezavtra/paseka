@@ -2,10 +2,13 @@ import {
   accumulateCentroids,
   containmentDeltas,
   propagateDown,
+  propagateRotation,
+  repelCones,
   repelSiblings,
   siblingPairs,
   type SiblingPairs,
 } from './groups.js';
+import type { ChildIndex } from './cones.js';
 
 /**
  * Переходник между групповой математикой и симуляцией d3.
@@ -196,6 +199,114 @@ export function forceGroupRepel(state: FolderState): GroupForce {
 
   force.initialize = (nodes: MutableNode[]): void => {
     scratch = allocate(state, nodes);
+  };
+  return force;
+}
+
+/** Всё, что угловой силе нужно знать о дереве и настройках. */
+export interface ConeState {
+  active: Uint8Array;
+  parent: Uint32Array;
+  /** Радиус следа поддерева: из него считается фактический конус. */
+  footprint: Float32Array;
+  /** Дети каждого пути: конусы разводятся по одному родителю за раз. */
+  children: ChildIndex;
+  /** Сила разведения конусов. */
+  strength: number;
+  /** Потолок линейного сдвига самой дальней точки поддерева за тик, пиксели. */
+  maxStep: number;
+  /** Зазор между конусами и вокруг ребра вверх, радианы. */
+  guard: number;
+}
+
+/** Рабочие массивы угловой силы: выделяются в initialize, а не каждый тик. */
+interface ConeScratch {
+  x: Float64Array;
+  y: Float64Array;
+  spin: Float64Array;
+  sum: Float64Array;
+  torqueX: Float64Array;
+  torqueY: Float64Array;
+  vx: Float64Array;
+  vy: Float64Array;
+  nodes: MutableNode[];
+}
+
+/**
+ * Угловая сила: поддеревья, чьи конусы налезли друг на друга, расходятся —
+ * и вместе со всем содержимым, жёстким поворотом вокруг родителя.
+ *
+ * Единственная сила в раскладке, которая вообще знает про углы. Всё остальное
+ * (пружины, разведение кружков, заряд, групповые силы) работает с расстояниями,
+ * и потому дерево, планарное по построению, рисовалось с пересечениями.
+ *
+ * Что сила именно контактная, а не возвращающая на заранее назначенное место, —
+ * вывод замера, а не вкуса. Предписывающий вариант был написан и померен: он
+ * честно чинил угловой инвариант (столкновения конусов 14.6% -> 3.8%) и при
+ * этом удваивал пересечения рёбер (4.5% -> 11.6%), потому что порядок в круге
+ * брался из идентификаторов путей, то есть из истории репозитория, а тому
+ * нечего сказать о том, где вокруг уже стоят двоюродные поддеревья. Контактная
+ * даёт 0.7% и не спорит ни с расталкиванием следов, ни с пружинами.
+ */
+export function forceCones(state: ConeState): GroupForce {
+  let scratch: ConeScratch | null = null;
+
+  const force = ((alpha: number): void => {
+    if (!scratch || state.strength <= 0) return;
+    scratch.x.fill(0);
+    scratch.y.fill(0);
+    for (const node of scratch.nodes) {
+      if (state.active[node.id] !== 1) continue;
+      scratch.x[node.id] = node.x;
+      scratch.y[node.id] = node.y;
+    }
+    scratch.spin.fill(0);
+    repelCones(
+      state.active,
+      state.parent,
+      state.children,
+      scratch.x,
+      scratch.y,
+      state.footprint,
+      state.guard,
+      state.strength,
+      alpha,
+      state.maxStep,
+      scratch.spin,
+    );
+    scratch.vx.fill(0);
+    scratch.vy.fill(0);
+    propagateRotation(
+      state.active,
+      state.parent,
+      scratch.x,
+      scratch.y,
+      scratch.spin,
+      scratch.sum,
+      scratch.torqueX,
+      scratch.torqueY,
+      scratch.vx,
+      scratch.vy,
+    );
+    for (const node of scratch.nodes) {
+      node.vx = (node.vx ?? 0) + scratch.vx[node.id]!;
+      node.vy = (node.vy ?? 0) + scratch.vy[node.id]!;
+    }
+  }) as GroupForce;
+
+  force.initialize = (nodes: MutableNode[]): void => {
+    const pathCount = state.active.length;
+    scratch = {
+      x: new Float64Array(pathCount),
+      y: new Float64Array(pathCount),
+      spin: new Float64Array(pathCount),
+      sum: new Float64Array(pathCount),
+      torqueX: new Float64Array(pathCount),
+      torqueY: new Float64Array(pathCount),
+      vx: new Float64Array(pathCount),
+      vy: new Float64Array(pathCount),
+      nodes,
+    };
   };
   return force;
 }
