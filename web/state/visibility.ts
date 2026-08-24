@@ -149,20 +149,57 @@ export function encodeVisibility(pack: Pack, spec: VisibilitySpec): string {
 }
 
 /**
+ * Каталоги, скрытые при первом открытии репозитория.
+ *
+ * Только `vendor` и только по имени каталога: это единственная папка, которая
+ * почти всегда есть в дереве, почти никогда не интересна и при этом обычно
+ * крупнее всего остального кода вместе взятого — на репозитории с вендорингом
+ * первая же картинка без неё превращается в ком чужих зависимостей.
+ *
+ * Всё остальное из списка типового шума (`node_modules`, `dist`, `build`,
+ * `target`) по-прежнему скрывается только по явному нажатию кнопки: инструмент
+ * не должен молча прятать данные. И даже `vendor` прячется не молча — он виден
+ * в навигаторе дерева со снятой галочкой, то есть сразу понятно, что он скрыт
+ * и как его вернуть. Возвращённый однажды, он больше не прячется: любое
+ * действие в панели пишет выбор в хранилище, а сохранённый выбор сильнее
+ * умолчания.
+ */
+const HIDDEN_BY_DEFAULT = ['vendor'];
+
+/** Видимость при первом открытии: сохранённого выбора ещё нет. */
+export function defaultVisibility(pack: Pack): VisibilitySpec {
+  const hidden = new Set<number>();
+  for (let path = 1; path < pack.meta.pathCount; path++) {
+    if (pack.pathIsDir[path] !== 1) continue;
+    const full = pack.paths[path]!;
+    const slash = full.lastIndexOf('/');
+    const name = slash === -1 ? full : full.slice(slash + 1);
+    if (HIDDEN_BY_DEFAULT.includes(name)) hidden.add(path);
+  }
+  return { hidden, collapsed: new Set() };
+}
+
+/**
  * Разбирает сохранённую видимость. Любое непонятное содержимое — не JSON,
- * не объект, поля не того типа — читается как «ничего не скрыто»: выбор
- * панели не та ценность, ради которой стоит ронять страницу.
+ * не объект, поля не того типа — читается как «выбора ещё нет», то есть даёт
+ * умолчание: выбор панели не та ценность, ради которой стоит ронять страницу.
+ *
+ * Разница между «выбора нет» и «выбран пустой набор» здесь значимая. Пустое
+ * хранилище — это первое открытие, и тогда действует умолчание. А вот
+ * сохранённые пустые списки означают, что пользователь снял скрытие руками, и
+ * возвращать его обратно нельзя: иначе `vendor` воскресал бы после каждой
+ * перезагрузки, и панель выглядела бы сломанной.
  */
 export function decodeVisibility(pack: Pack, raw: string | null | undefined): VisibilitySpec {
-  if (!raw) return { hidden: new Set(), collapsed: new Set() };
+  if (!raw) return defaultVisibility(pack);
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
-    return { hidden: new Set(), collapsed: new Set() };
+    return defaultVisibility(pack);
   }
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-    return { hidden: new Set(), collapsed: new Set() };
+    return defaultVisibility(pack);
   }
   const bag = parsed as Record<string, unknown>;
   return { hidden: idsOf(pack, bag.hidden), collapsed: idsOf(pack, bag.collapsed) };

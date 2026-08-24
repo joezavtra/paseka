@@ -137,9 +137,8 @@ export function mountPhysics(root: HTMLElement, options: PhysicsOptions): Physic
   const reset = document.createElement('button');
   reset.type = 'button';
   reset.className = 'physics-reset';
-  reset.textContent = 'Вернуть замеренные';
-  reset.title =
-    'Значения по умолчанию подобраны замером на дереве с глубокими цепочками папок, а не на глаз.';
+  reset.textContent = 'Вернуть по умолчанию';
+  reset.title = 'Вернуть значения, с которыми инструмент открывается на новом репозитории.';
   reset.addEventListener('click', () => {
     current = { ...DEFAULT_LAYOUT_PARAMS };
     for (const spec of LAYOUT_PARAM_SPECS) {

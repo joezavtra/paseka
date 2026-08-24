@@ -33,6 +33,7 @@ import { avatarColor, initialsFor } from './render/avatar.js';
 import type { ActorLayer, BeamLayer } from './render/scene.js';
 import {
   decodeVisibility,
+  defaultVisibility,
   encodeVisibility,
   resolveVisibility,
   type VisibilitySpec,
@@ -765,7 +766,9 @@ async function start(): Promise<void> {
     try {
       return decodeVisibility(pack, localStorage.getItem(VISIBILITY_KEY));
     } catch {
-      return { hidden: new Set(), collapsed: new Set() };
+      // Хранилище недоступно (приватный режим) — это не повод показывать не то,
+      // что показал бы первый запуск.
+      return defaultVisibility(pack);
     }
   }
 

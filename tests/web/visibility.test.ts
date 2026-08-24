@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   decodeVisibility,
+  defaultVisibility,
   encodeVisibility,
   HIDDEN,
   resolveVisibility,
@@ -207,16 +208,17 @@ describe('кодек хранилища видимости', () => {
     expect([...restored.collapsed]).toEqual([]);
   });
 
-  it('на пустом хранилище не скрывает ничего', () => {
-    expect(decodeVisibility(pack, null).hidden.size).toBe(0);
-    expect(decodeVisibility(pack, '').collapsed.size).toBe(0);
+  it('на пустом хранилище даёт умолчание, а не пустоту', () => {
+    // В этом пакете папки vendor нет, поэтому умолчание пустое — но приходит
+    // оно именно из defaultVisibility, что проверяется на пакете с vendor ниже.
+    expect(decodeVisibility(pack, null)).toEqual(defaultVisibility(pack));
+    expect(decodeVisibility(pack, '')).toEqual(defaultVisibility(pack));
   });
 
   it('переживает испорченное содержимое, не роняя страницу', () => {
     for (const raw of ['{', 'не json вовсе', 'null', '42', '"строка"', '[1,2,3]']) {
       const restored = decodeVisibility(pack, raw);
-      expect(restored.hidden.size, raw).toBe(0);
-      expect(restored.collapsed.size, raw).toBe(0);
+      expect(restored, raw).toEqual(defaultVisibility(pack));
     }
   });
 
@@ -251,5 +253,60 @@ describe('кодек хранилища видимости', () => {
     const restored = decodeVisibility(pack, encodeVisibility(pack, spec));
     expect([...restored.hidden].sort()).toEqual([...spec.hidden].sort());
     expect([...restored.collapsed]).toEqual([...spec.collapsed]);
+  });
+});
+
+describe('видимость при первом открытии', () => {
+  const vendored = buildPack(
+    [
+      commit('c0', [
+        add('src/a.ts', 10),
+        add('vendor/lib/x.go', 100),
+        add('internal/vendor/y.go', 50),
+        add('docs/vendor', 3),
+      ]),
+    ],
+    { repoName: 'demo', head: 'c0' },
+  );
+  const at = (path: string) => vendored.paths.indexOf(path);
+
+  it('скрывает папку vendor на любой глубине', () => {
+    const spec = defaultVisibility(vendored);
+    expect(spec.hidden.has(at('vendor'))).toBe(true);
+    expect(spec.hidden.has(at('internal/vendor'))).toBe(true);
+  });
+
+  it('файл с таким именем не прячется: скрывать надо каталог, а не совпадение строк', () => {
+    expect(vendored.pathIsDir[at('docs/vendor')]).toBe(0);
+    expect(defaultVisibility(vendored).hidden.has(at('docs/vendor'))).toBe(false);
+  });
+
+  it('остальное остаётся видимым, включая прочий типовой шум', () => {
+    // node_modules, dist и прочее по-прежнему скрываются только по кнопке:
+    // инструмент не должен молча прятать данные.
+    const spec = defaultVisibility(vendored);
+    expect(spec.hidden.has(at('src'))).toBe(false);
+    expect(spec.hidden.has(at('internal'))).toBe(false);
+    expect(spec.collapsed.size).toBe(0);
+  });
+
+  it('корень не прячется никогда', () => {
+    expect(defaultVisibility(vendored).hidden.has(0)).toBe(false);
+  });
+
+  it('на первом открытии vendor скрыт', () => {
+    expect(decodeVisibility(vendored, null).hidden.has(at('vendor'))).toBe(true);
+  });
+
+  it('снятое пользователем скрытие сильнее умолчания', () => {
+    // Пустые списки в хранилище — это не «выбора нет», а «выбрано ничего не
+    // скрывать». Иначе vendor воскресал бы после каждой перезагрузки.
+    const restored = decodeVisibility(vendored, '{"hidden":[],"collapsed":[]}');
+    expect(restored.hidden.size).toBe(0);
+  });
+
+  it('сохранённый выбор со своими папками не подмешивает умолчание', () => {
+    const restored = decodeVisibility(vendored, '{"hidden":["src"],"collapsed":[]}');
+    expect([...restored.hidden]).toEqual([at('src')]);
   });
 });
