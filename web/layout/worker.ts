@@ -8,13 +8,15 @@ import {
   type SimulationLinkDatum,
 } from 'd3-force';
 import {
+  branchDistanceFor,
   chargeStrengthFor,
   countChildren,
   linkDistanceFor,
   linkStrengthFor,
   radialShare,
 } from './graph.js';
-import { subtreeStats, type SubtreeStats } from './subtree.js';
+import { buildChildIndex, subtreeStats, type SubtreeStats } from './subtree.js';
+import type { ChildIndex, SectorSettings } from './sectors.js';
 import { forceFolderCohesion, forceGroupRepel, type FolderState } from './forces.js';
 import { DEFAULT_LAYOUT_PARAMS, sanitizeParams, type LayoutParams } from './params.js';
 import { NodeStore, type StoreNode } from './node-store.js';
@@ -65,6 +67,20 @@ let stats: SubtreeStats | null = null;
 let lastActive: Uint8Array = new Uint8Array(0);
 /** Радиусы по идентификатору пути: у узлов они лежат в объектах, а следам нужен массив. */
 let lastRadius: Float32Array = new Float32Array(0);
+/**
+ * Дети каждого пути последнего `update`. Нужны и следу (кольцо считается по
+ * ветвящимся детям), и угловому плану, поэтому строятся один раз на состав.
+ */
+let childIndex: ChildIndex = { start: new Uint32Array(1), items: new Uint32Array(0) };
+
+/** Угловая часть настроек: панель хранит зазор в градусах, геометрия — в радианах. */
+function sectorSettings(): SectorSettings {
+  return {
+    backGuard: (params.sectorBackGuard * Math.PI) / 180,
+    branchBudget: params.branchBudget,
+    margin: params.sectorMargin,
+  };
+}
 /**
  * Состояние групповых сил. Один объект, который силы держат по ссылке: при
  * смене состава и настроек он переписывается на месте, и пересобирать сами
@@ -139,16 +155,19 @@ function applyForces(target: Simulation<StoreNode, SimulationLinkDatum<StoreNode
       'link',
       forceLink<StoreNode, SimulationLinkDatum<StoreNode>>(lastLinks)
         .distance((link) => {
-          const footprint = stats?.footprint;
-          if (!footprint) return params.linkMin;
+          if (!stats) return params.linkMin;
           const source = link.source as StoreNode;
           const target = link.target as StoreNode;
-          return linkDistanceFor(
-            footprint[source.id] ?? 0,
-            footprint[target.id] ?? 0,
-            params,
-            radialShare(target.id),
-          );
+          const parentFootprint = stats.footprint[source.id] ?? 0;
+          const childFootprint = stats.footprint[target.id] ?? 0;
+          // Развилка «папка или файл»: подпапка идёт на кольцо, где её конус
+          // узок и предсказуем, файл — на случайную глубину диска. Случайная
+          // доля радиуса подпапке прямо вредна: она задавала бы ей произвольную
+          // угловую потребность.
+          if ((childCount[target.id] ?? 0) > 0) {
+            return branchDistanceFor(parentFootprint, childFootprint, stats.ring[source.id] ?? 0, params);
+          }
+          return linkDistanceFor(parentFootprint, childFootprint, params, radialShare(target.id));
         })
         .strength((link) => linkStrengthFor(branching(link), params)),
     )
@@ -188,6 +207,7 @@ self.onmessage = (event: MessageEvent<ToWorker>) => {
     stats = null;
     lastActive = new Uint8Array(0);
     lastRadius = new Float32Array(0);
+    childIndex = { start: new Uint32Array(1), items: new Uint32Array(0) };
     simulation?.stop();
     simulation = null;
     return;
@@ -201,7 +221,15 @@ self.onmessage = (event: MessageEvent<ToWorker>) => {
     // Следы зависят от настроек упаковки и зазора, поэтому пересчитываются
     // вместе с ними, а не только при смене состава.
     if (lastActive.length > 0) {
-      stats = subtreeStats(lastActive, treeParent, lastRadius, params.collidePadding, params.packFill);
+      stats = subtreeStats(
+        lastActive,
+        treeParent,
+        lastRadius,
+        params.collidePadding,
+        params.packFill,
+        childIndex,
+        sectorSettings(),
+      );
     }
     syncFolders();
     if (simulation) {
@@ -260,7 +288,16 @@ self.onmessage = (event: MessageEvent<ToWorker>) => {
   lastActive = message.active;
   lastRadius = new Float32Array(message.active.length);
   for (const node of nodes) lastRadius[node.id] = node.radius;
-  stats = subtreeStats(lastActive, treeParent, lastRadius, params.collidePadding, params.packFill);
+  childIndex = buildChildIndex(lastActive, treeParent);
+  stats = subtreeStats(
+    lastActive,
+    treeParent,
+    lastRadius,
+    params.collidePadding,
+    params.packFill,
+    childIndex,
+    sectorSettings(),
+  );
   syncFolders();
   applyForces(simulation);
 

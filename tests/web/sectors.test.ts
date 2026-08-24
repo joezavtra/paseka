@@ -1,12 +1,32 @@
 import { describe, it, expect } from 'vitest';
 import {
+  angularBudget,
   planSectors,
   requiredHalfAngle,
   ringRadius,
   wrapPi,
+  type ChildIndex,
   type SectorSettings,
 } from '../../web/layout/sectors.js';
 import { buildChildIndex } from '../../web/layout/subtree.js';
+
+/**
+ * Кольца по следам — ровно тем же правилом, каким их считает subtreeStats.
+ * План получает готовое число: искать его самому ему незачем, а разойтись с
+ * тем, что заложено в след папки, нельзя.
+ */
+function ringsFor(children: ChildIndex, footprint: Float32Array, s: SectorSettings): Float64Array {
+  const ring = new Float64Array(footprint.length);
+  for (let parent = 0; parent < footprint.length; parent++) {
+    const branches: number[] = [];
+    for (let i = children.start[parent]!; i < children.start[parent + 1]!; i++) {
+      const child = children.items[i]!;
+      if (children.start[child + 1]! > children.start[child]!) branches.push(footprint[child]!);
+    }
+    ring[parent] = ringRadius(branches, angularBudget(parent === 0, s));
+  }
+  return ring;
+}
 
 const settings = (over: Partial<SectorSettings> = {}): SectorSettings => ({
   backGuard: Math.PI / 12,
@@ -45,13 +65,11 @@ describe('requiredHalfAngle', () => {
 });
 
 describe('ringRadius', () => {
-  it('единственный ребёнок садится вплотную к своему следу', () => {
-    // Ровно на следе конус занимает всю плоскость, поэтому кольцо обязано быть
-    // строго дальше — но лишь на волос: иначе транзитная цепочка каталогов
-    // раздувалась бы на каждом звене.
-    const ring = ringRadius([40], Math.PI * 1.5);
-    expect(ring).toBeGreaterThan(40);
-    expect(ring).toBeLessThan(40.001);
+  it('единственному ребёнку кольцо не нужно', () => {
+    // Конусы разводят между собой; с одним разводить нечего. Потребуй общая
+    // формула отойти на собственный след — и транзитная цепочка каталогов
+    // растянулась бы на каждом звене.
+    expect(ringRadius([40], Math.PI * 1.5)).toBe(0);
   });
 
   it('чем больше детей, тем дальше кольцо', () => {
@@ -71,8 +89,10 @@ describe('ringRadius', () => {
     expect(width(ring * 0.98)).toBeGreaterThan(budget);
   });
 
-  it('крупный ребёнок задаёт нижнюю границу кольца', () => {
-    expect(ringRadius([200, 5, 5], Math.PI * 1.5)).toBeGreaterThanOrEqual(200);
+  it('огромный ребёнок обязан отойти за собственный след', () => {
+    // Иначе он накроет вершину, его конус станет полной плоскостью, и мелким
+    // сиблингам не останется ни градуса. Это честная цена планарности.
+    expect(ringRadius([200, 5, 5], Math.PI * 1.2)).toBeGreaterThanOrEqual(200);
   });
 
   it('пустой список кольца не требует', () => {
@@ -93,13 +113,13 @@ describe('planSectors', () => {
 
   it('сектор достаётся ветвящимся детям, а файлу — нет', () => {
     const s = branchy();
-    const plan = planSectors(s.active, s.children, s.footprint, settings());
+    const plan = planSectors(s.active, s.children, s.footprint, ringsFor(s.children, s.footprint, settings()), settings());
     expect([...plan.hasSector]).toEqual([0, 1, 1, 1, 1, 0, 0, 0, 0]);
   });
 
   it('секторы сиблингов попарно не пересекаются', () => {
     const s = branchy();
-    const plan = planSectors(s.active, s.children, s.footprint, settings());
+    const plan = planSectors(s.active, s.children, s.footprint, ringsFor(s.children, s.footprint, settings()), settings());
     for (const [a, b] of [[2, 3], [2, 4], [3, 4]]) {
       const gap = Math.abs(wrapPi(plan.bearing[a]! - plan.bearing[b]!));
       expect(gap).toBeGreaterThanOrEqual(plan.halfWidth[a]! + plan.halfWidth[b]! - 1e-9);
@@ -123,12 +143,10 @@ describe('planSectors', () => {
     }
     const p = Uint32Array.from(parent);
     const active = Uint8Array.from(parent.map(() => 1));
-    const plan = planSectors(
-      active,
-      buildChildIndex(active, p),
-      Float32Array.from(footprint),
-      settings({ backGuard: guard, margin: 1 }),
-    );
+    const marks = settings({ backGuard: guard, margin: 1 });
+    const index = buildChildIndex(active, p);
+    const prints = Float32Array.from(footprint);
+    const plan = planSectors(active, index, prints, ringsFor(index, prints, marks), marks);
 
     let checked = 0;
     for (let child = 2; child < parent.length; child += 2) {
@@ -142,8 +160,8 @@ describe('planSectors', () => {
 
   it('сектор шире собственного конуса ровно на запас', () => {
     const s = branchy();
-    const tight = planSectors(s.active, s.children, s.footprint, settings({ margin: 0 }));
-    const loose = planSectors(s.active, s.children, s.footprint, settings({ margin: 1 }));
+    const tight = planSectors(s.active, s.children, s.footprint, ringsFor(s.children, s.footprint, settings({ margin: 0 })), settings({ margin: 0 }));
+    const loose = planSectors(s.active, s.children, s.footprint, ringsFor(s.children, s.footprint, settings({ margin: 1 })), settings({ margin: 1 }));
     expect(loose.halfWidth[2]!).toBeGreaterThan(tight.halfWidth[2]!);
     // Даже с полным запасом секторы только касаются, но не налезают.
     const gap = Math.abs(wrapPi(loose.bearing[2]! - loose.bearing[3]!));
@@ -155,13 +173,13 @@ describe('planSectors', () => {
     // новичок всегда последний в кольце. Если бы порядок зависел от размера
     // или угла, каждый коммит перетасовывал бы дерево.
     const before = branchy();
-    const planBefore = planSectors(before.active, before.children, before.footprint, settings());
+    const planBefore = planSectors(before.active, before.children, before.footprint, ringsFor(before.children, before.footprint, settings()), settings());
 
     const parent = [0, 0, 1, 1, 1, 1, 2, 3, 4, 1, 9];
     const p = Uint32Array.from(parent);
     const active = Uint8Array.from(parent.map(() => 1));
     const footprint = Float32Array.from([500, 200, 40, 30, 25, 3, 3, 3, 3, 4, 3]);
-    const planAfter = planSectors(active, buildChildIndex(active, p), footprint, settings());
+    const planAfter = planSectors(active, buildChildIndex(active, p), footprint, ringsFor(buildChildIndex(active, p), footprint, settings()), settings());
 
     for (const child of [2, 3, 4]) {
       expect(planAfter.bearing[child]!).toBeLessThan(planBefore.bearing[child]! + 1e-9);
@@ -177,19 +195,9 @@ describe('planSectors', () => {
     const p = Uint32Array.from(parent);
     const active = Uint8Array.from([1, 1, 1, 1, 1]);
     const footprint = Float32Array.from([500, 60, 60, 3, 3]);
-    const plan = planSectors(active, buildChildIndex(active, p), footprint, settings());
+    const plan = planSectors(active, buildChildIndex(active, p), footprint, ringsFor(buildChildIndex(active, p), footprint, settings()), settings());
     expect(plan.bearing[1]).toBe(0);
     expect(plan.bearing[2]!).toBeGreaterThan(0);
-  });
-
-  it('транзитная папка кольцо не раздувает', () => {
-    const parent = [0, 0, 1, 2, 3];
-    const p = Uint32Array.from(parent);
-    const active = Uint8Array.from([1, 1, 1, 1, 1]);
-    const footprint = Float32Array.from([100, 90, 80, 70, 3]);
-    const plan = planSectors(active, buildChildIndex(active, p), footprint, settings());
-    expect(plan.ring[1]!).toBeLessThan(80.001);
-    expect(plan.ring[2]!).toBeLessThan(70.001);
   });
 
   it('скрытое поддерево в план не попадает', () => {
@@ -197,7 +205,7 @@ describe('planSectors', () => {
     const p = Uint32Array.from(parent);
     const active = Uint8Array.from([1, 1, 0, 1, 0]);
     const footprint = Float32Array.from([500, 60, 60, 3, 3]);
-    const plan = planSectors(active, buildChildIndex(active, p), footprint, settings());
+    const plan = planSectors(active, buildChildIndex(active, p), footprint, ringsFor(buildChildIndex(active, p), footprint, settings()), settings());
     expect(plan.hasSector[2]).toBe(0);
   });
 });

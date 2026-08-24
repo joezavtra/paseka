@@ -46,15 +46,24 @@ export function requiredHalfAngle(footprint: number, distance: number): number {
  * радиусом. Сумма ширин конусов `2·asin(R_i/d)` монотонно убывает по `d`,
  * поэтому наименьшее годное `d` находится делением пополам, а не подбором.
  *
- * Нижняя граница поиска — след самого крупного ребёнка, и сама она решением
- * никогда не бывает: на этом расстоянии его след накрывает вершину, конус
- * занимает всю плоскость и в бюджет заведомо не влезает. Зато чуть дальше
- * одинокий ребёнок даёт конус ровно в полплоскости и помещается сразу —
- * поэтому у папки с единственным ребёнком кольцо садится вплотную к его следу,
- * и транзитная цепочка каталогов не раздувается без единой отдельной ветки.
+ * Единственному ветвящемуся ребёнку кольцо не нужно вовсе: конусы разводят
+ * между собой, а разводить нечего. Это не мелкая оптимизация, а условие
+ * сохранности транзитных цепочек: общая формула потребовала бы от одинокого
+ * ребёнка отойти на собственный след, и цепочка каталогов растянулась бы ровно
+ * тем растягиванием, ради избавления от которого длина ребра когда-то и стала
+ * выводиться из следов.
+ *
+ * Кольцо — нижняя граница расстояния, а не предписание. Ребёнок, стоящий
+ * дальше, виден под ещё более узким конусом и в свой сектор попадает с
+ * запасом; нарушить сектор способно только приближение.
+ *
+ * Дорогой случай формула не смягчает: если у папки два ребёнка и один из них
+ * огромен, он обязан отойти дальше собственного следа, иначе накроет вершину и
+ * второму не останется ни градуса. Это честная цена планарности, а не изъян
+ * счёта.
  */
 export function ringRadius(footprints: readonly number[], budget: number): number {
-  if (footprints.length === 0) return 0;
+  if (footprints.length < 2) return 0;
   let maxFootprint = 0;
   let sum = 0;
   for (const value of footprints) {
@@ -70,10 +79,11 @@ export function ringRadius(footprints: readonly number[], budget: number): numbe
     return total;
   };
 
-  let low = maxFootprint;
+  let low = 0;
+  if (width(low) <= budget) return 0;
   // Для больших d ширина ведёт себя как 2·ΣR/d, отсюда верхняя оценка. Удвоение
   // остаётся страховкой на случай, когда приближение ещё не работает.
-  let high = Math.max(low * 2, (4 * sum) / Math.max(budget, 1e-6));
+  let high = Math.max(maxFootprint * 2, (4 * sum) / Math.max(budget, 1e-6));
   for (let guard = 0; guard < 40 && width(high) > budget; guard++) high *= 2;
 
   for (let i = 0; i < 24; i++) {
@@ -100,6 +110,31 @@ export interface SectorSettings {
   margin: number;
 }
 
+/** Настройки, приведённые к годным значениям: границы проверяются один раз. */
+function normalize(settings: SectorSettings) {
+  return {
+    guard: Math.min(Math.PI / 3, Math.max(0, settings.backGuard)),
+    budget: Math.min(1, Math.max(0, settings.branchBudget)),
+    margin: Math.min(1, Math.max(0, settings.margin)),
+  };
+}
+
+/**
+ * Сколько угла отводится ветвящимся детям этого узла.
+ *
+ * Считается здесь, а не в двух местах, потому что этим числом пользуются и
+ * след поддерева (кольцо входит в радиус папки), и сам план. Разойдись они —
+ * и папка обещала бы детям кольцо, в которое сама не помещается, а сборка
+ * группы тянула бы их обратно внутрь ровно против выданного сектора.
+ *
+ * У корня направления на родителя нет, поэтому и защищать нечего: круг
+ * доступен целиком.
+ */
+export function angularBudget(isRoot: boolean, settings: SectorSettings): number {
+  const { guard, budget } = normalize(settings);
+  return (isRoot ? TAU : TAU - 2 * guard) * budget;
+}
+
 /** Угловой план: всё индексируется идентификатором пути. */
 export interface SectorPlan {
   /** Направление сектора, отсчитанное от направления на родителя. */
@@ -108,8 +143,11 @@ export interface SectorPlan {
   halfWidth: Float64Array;
   /** Есть ли у пути свой сектор. Файлу он не нужен — ему хватает чужих границ. */
   hasSector: Uint8Array;
-  /** Радиус кольца, на котором стоят ветвящиеся дети этого пути. */
-  ring: Float64Array;
+  /**
+   * Ребёнок, задающий систему отсчёта для узла без родителя, или −1.
+   * Заполняется только у корня: всем остальным отсчёт задаёт их родитель.
+   */
+  anchor: Int32Array;
 }
 
 /**
@@ -139,6 +177,7 @@ export function planSectors(
   active: Uint8Array,
   children: ChildIndex,
   footprint: Float32Array,
+  ring: Float64Array,
   settings: SectorSettings,
 ): SectorPlan {
   const pathCount = active.length;
@@ -146,12 +185,9 @@ export function planSectors(
     bearing: new Float64Array(pathCount),
     halfWidth: new Float64Array(pathCount),
     hasSector: new Uint8Array(pathCount),
-    ring: new Float64Array(pathCount),
+    anchor: new Int32Array(pathCount).fill(-1),
   };
-
-  const guard = Math.min(Math.PI / 3, Math.max(0, settings.backGuard));
-  const budgetShare = Math.min(1, Math.max(0, settings.branchBudget));
-  const margin = Math.min(1, Math.max(0, settings.margin));
+  const { guard, margin } = normalize(settings);
 
   for (let parent = 0; parent < pathCount; parent++) {
     if (active[parent] !== 1) continue;
@@ -159,7 +195,6 @@ export function planSectors(
     const to = children.start[parent + 1]!;
     if (to === from) continue;
 
-    const isRoot = parent === 0;
     const branches: number[] = [];
     const footprints: number[] = [];
     for (let i = from; i < to; i++) {
@@ -170,14 +205,12 @@ export function planSectors(
     }
     if (branches.length === 0) continue;
 
+    const isRoot = parent === 0;
     const arc = isRoot ? TAU : TAU - 2 * guard;
-    const ring = ringRadius(footprints, arc * budgetShare);
-    plan.ring[parent] = ring;
-
     let needed = 0;
     const widths: number[] = [];
     for (const value of footprints) {
-      const width = 2 * requiredHalfAngle(value, ring);
+      const width = 2 * requiredHalfAngle(value, ring[parent]!);
       widths.push(width);
       needed += width;
     }
@@ -190,6 +223,7 @@ export function planSectors(
     // защитного зазора вокруг родителя и запас выталкивал бы его за неё.
     if (isRoot) {
       plan.bearing[branches[0]!] = 0;
+      plan.anchor[parent] = branches[0]!;
       let cursor = widths[0]! / 2;
       for (let i = 1; i < branches.length; i++) {
         cursor += gap;
