@@ -116,28 +116,22 @@ function applyForces(target: Simulation<StoreNode, SimulationLinkDatum<StoreNode
   // путям.
   //
   // Порядок вставки значим: d3 хранит силы в Map и обходит их в порядке
-  // первого добавления, а разведение кружков и пружины читают уже накопленную
-  // за этот тик скорость. Групповые силы идут после заряда и до пружин, а
-  // разведение — последним: за фактическое наложение кружков отвечает оно, и
-  // групповой сдвиг не должен идти следом и снова их сближать.
+  // первого добавления, и каждая следующая читает уже накопленную за этот тик
+  // скорость. Разведение стоит последним: за фактическое наложение кружков
+  // отвечает оно, и групповой сдвиг не должен идти следом и снова их сближать.
+  //
+  // Величина эффекта замерена, а не предположена, и она мала: на пересобранном
+  // стенде того же размера (8186 узлов) перенос разведения в конец даёт 13 619 пар
+  // задетых кружков против 14 198 — минус 4% при среднем проникновении 0.31 px
+  // против 0.32. Число устойчиво по сидам, в отличие от пересечений рёбер: те
+  // гуляют на шесть процентных пунктов от одной начальной раскладки к другой,
+  // и по одному прогону про них ничего сказать нельзя.
   target
     .force(
       'charge',
       forceManyBody<StoreNode>()
         .strength((node) => chargeStrengthFor(node.radius, childCount[node.id] ?? 0, params))
         .distanceMax(params.chargeDistanceMax),
-    )
-    // Узлы не должны налезать друг на друга: отталкивание зарядом держит их на
-    // расстоянии в среднем, но не мешает крупному узлу накрыть соседа — а
-    // накрытый узел и не кликается, и не читается.
-    // Цена измерена, а не прикинута: на 7500 узлов тик дорожает с 28 до 38 мс
-    // (+34%). Раскладка живёт в воркере и кадры не задерживает, поэтому платим
-    // временем сходимости, а не частотой отрисовки.
-    .force(
-      'collide',
-      forceCollide<StoreNode>()
-        .radius((node) => node.radius + params.collidePadding)
-        .strength(params.collideStrength),
     )
     .force('groupRepel', forceGroupRepel(folders))
     .force('groupCohesion', forceFolderCohesion(folders))
@@ -157,6 +151,18 @@ function applyForces(target: Simulation<StoreNode, SimulationLinkDatum<StoreNode
           );
         })
         .strength((link) => linkStrengthFor(branching(link), params)),
+    )
+    // Узлы не должны налезать друг на друга: отталкивание зарядом держит их на
+    // расстоянии в среднем, но не мешает крупному узлу накрыть соседа — а
+    // накрытый узел и не кликается, и не читается.
+    // Цена измерена, а не прикинута: на 7500 узлов тик дорожает с 28 до 38 мс
+    // (+34%). Раскладка живёт в воркере и кадры не задерживает, поэтому платим
+    // временем сходимости, а не частотой отрисовки.
+    .force(
+      'collide',
+      forceCollide<StoreNode>()
+        .radius((node) => node.radius + params.collidePadding)
+        .strength(params.collideStrength),
     )
     .alphaDecay(params.alphaDecay)
     .velocityDecay(params.velocityDecay);
@@ -196,7 +202,6 @@ self.onmessage = (event: MessageEvent<ToWorker>) => {
     // вместе с ними, а не только при смене состава.
     if (lastActive.length > 0) {
       stats = subtreeStats(lastActive, treeParent, lastRadius, params.collidePadding, params.packFill);
-  syncFolders();
     }
     syncFolders();
     if (simulation) {
