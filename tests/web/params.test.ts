@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   DEFAULT_LAYOUT_PARAMS,
   LAYOUT_PARAM_SPECS,
+  PARAMS_VERSION,
   decodeParams,
   encodeParams,
   sanitizeParams,
@@ -90,8 +91,23 @@ describe('хранение настроек', () => {
   });
 
   it('значения из хранилища зажимаются: файл могли править руками', () => {
-    expect(decodeParams('{"collideStrength":1000}').collideStrength).toBe(
-      specFor('collideStrength').max,
-    );
+    const raw = JSON.stringify({ v: PARAMS_VERSION, ...DEFAULT_LAYOUT_PARAMS, collideStrength: 1000 });
+    expect(decodeParams(raw).collideStrength).toBe(specFor('collideStrength').max);
+  });
+
+  it('настройки прошлой версии читаются как умолчания', () => {
+    // Иначе обновление проходит незаметно и вредно: старое значение обычно
+    // лежит внутри новых границ, sanitizeParams его пропускает, и человек,
+    // однажды покрутивший ползунки, продолжает видеть позапрошлую физику.
+    const older = JSON.stringify({ v: PARAMS_VERSION - 1, ...DEFAULT_LAYOUT_PARAMS, linkMax: 60 });
+    expect(decodeParams(older)).toEqual(DEFAULT_LAYOUT_PARAMS);
+
+    const versionless = JSON.stringify({ ...DEFAULT_LAYOUT_PARAMS, linkMax: 60 });
+    expect(decodeParams(versionless)).toEqual(DEFAULT_LAYOUT_PARAMS);
+  });
+
+  it('поле версии не протекает в сами настройки', () => {
+    const restored = decodeParams(encodeParams(DEFAULT_LAYOUT_PARAMS)) as unknown as Record<string, unknown>;
+    expect(restored['v']).toBeUndefined();
   });
 });

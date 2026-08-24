@@ -127,26 +127,37 @@ describe('countChildren', () => {
 
 describe('linkDistanceFor', () => {
   it('транзитная папка держит ребёнка вплотную', () => {
-    // Раньше длина была одна на все рёбра (24), и цепочка папок с единственным
-    // ребёнком растягивала дерево на всю глубину. Звено такой цепочки обязано
-    // быть заметно короче прежней константы.
-    expect(linkDistanceFor(1)).toBeLessThan(15);
-    expect(linkDistanceFor(1)).toBeLessThan(linkDistanceFor(4));
+    // След папки с единственным ребёнком равен следу самого ребёнка, разность
+    // нулевая — и цепочка каталогов остаётся короткой без отдельной ветки в коде.
+    expect(linkDistanceFor(40, 40)).toBe(DEFAULT_LAYOUT_PARAMS.linkMin);
   });
 
-  it('ветвящейся папке нужно кольцо пошире', () => {
-    expect(linkDistanceFor(25)).toBeGreaterThan(linkDistanceFor(4));
-    expect(linkDistanceFor(4)).toBeGreaterThan(linkDistanceFor(2));
+  it('длина растёт вместе со следом папки', () => {
+    // Прежняя формула упиралась в потолок 60 и держала содержимое сжатым:
+    // диск папки на две тысячи файлов — четыре сотни пикселей, а пружины
+    // тянули на шестьдесят.
+    const roomy = linkDistanceFor(459, 9);
+    expect(roomy).toBeGreaterThan(300);
+    expect(roomy).toBeGreaterThan(linkDistanceFor(60, 9));
   });
 
-  it('длина ограничена сверху: дальше кольцо не помогает', () => {
-    expect(linkDistanceFor(10_000)).toBeLessThanOrEqual(60);
-    expect(linkDistanceFor(10_000)).toBe(linkDistanceFor(100_000));
+  it('крупный ребёнок садится на родителя, мелкий уходит на периферию', () => {
+    // Папка с одним огромным поддеревом и горстью файлов: поддерево и есть
+    // содержимое папки, ему незачем отодвигаться.
+    const huge = linkDistanceFor(405, 400);
+    const small = linkDistanceFor(405, 11);
+    expect(huge).toBe(DEFAULT_LAYOUT_PARAMS.linkMin);
+    expect(small).toBeGreaterThan(300);
   });
 
-  it('нулевое и отрицательное число детей не ломают длину', () => {
-    expect(linkDistanceFor(0)).toBeGreaterThan(0);
-    expect(Number.isFinite(linkDistanceFor(-5))).toBe(true);
+  it('потолок остаётся страховкой от вырожденного дерева', () => {
+    expect(linkDistanceFor(1e6, 0)).toBe(DEFAULT_LAYOUT_PARAMS.linkMax);
+  });
+
+  it('негодные следы не ломают длину', () => {
+    expect(linkDistanceFor(0, 0)).toBe(DEFAULT_LAYOUT_PARAMS.linkMin);
+    expect(linkDistanceFor(10, 40)).toBe(DEFAULT_LAYOUT_PARAMS.linkMin);
+    expect(Number.isFinite(linkDistanceFor(-5, -5))).toBe(true);
   });
 });
 
@@ -203,9 +214,9 @@ describe('силы принимают настройки', () => {
   });
 
   it('длина и жёсткость ребра тоже', () => {
-    const params = { ...DEFAULT_LAYOUT_PARAMS, linkMin: 100, linkSpread: 0, linkMax: 500, chainStrength: 0.1, branchStrength: 0.2 };
-    expect(linkDistanceFor(1, params)).toBe(100);
-    expect(linkDistanceFor(50, params)).toBe(100);
+    const params = { ...DEFAULT_LAYOUT_PARAMS, linkMin: 100, linkMax: 500, folderFill: 1, chainStrength: 0.1, branchStrength: 0.2 };
+    expect(linkDistanceFor(150, 20, params)).toBe(130);
+    expect(linkDistanceFor(5000, 0, params)).toBe(500);
     expect(linkStrengthFor(1, params)).toBe(0.1);
     expect(linkStrengthFor(9, params)).toBe(0.2);
   });

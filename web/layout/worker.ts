@@ -8,6 +8,7 @@ import {
   type SimulationLinkDatum,
 } from 'd3-force';
 import { chargeStrengthFor, countChildren, linkDistanceFor, linkStrengthFor } from './graph.js';
+import { subtreeStats, type SubtreeStats } from './subtree.js';
 import { DEFAULT_LAYOUT_PARAMS, sanitizeParams, type LayoutParams } from './params.js';
 import { NodeStore, type StoreNode } from './node-store.js';
 import type { FromWorker, ToWorker } from './protocol.js';
@@ -18,6 +19,8 @@ import type { FromWorker, ToWorker } from './protocol.js';
  * тестами напрямую. Здесь остаётся только сама симуляция сил.
  */
 let store: NodeStore | null = null;
+/** Дерево путей: приходит один раз в `init` и нужно обходам по поддеревьям. */
+let treeParent: Uint32Array = new Uint32Array(0);
 let simulation: Simulation<StoreNode, SimulationLinkDatum<StoreNode>> | null = null;
 let lastPost = 0;
 /**
@@ -45,6 +48,16 @@ let childCount: Uint32Array = new Uint32Array(0);
  * собирать заново и при смене настроек, а не только при смене состава.
  */
 let lastLinks: SimulationLinkDatum<StoreNode>[] = [];
+/**
+ * След поддерева на последнем `update`: сколько места требует каждая папка со
+ * всем, что внутри. Из него выводится длина ребра. Пересчитывается вместе с
+ * составом, потому что зависит и от маски, и от радиусов.
+ */
+let stats: SubtreeStats | null = null;
+/** Рисуемая маска последнего `update`: нужна для пересчёта следов. */
+let lastActive: Uint8Array = new Uint8Array(0);
+/** Радиусы по идентификатору пути: у узлов они лежат в объектах, а следам нужен массив. */
+let lastRadius: Float32Array = new Float32Array(0);
 
 /**
  * Пересобирает силы по текущим настройкам.
@@ -82,7 +95,13 @@ function applyForces(target: Simulation<StoreNode, SimulationLinkDatum<StoreNode
     .force(
       'link',
       forceLink<StoreNode, SimulationLinkDatum<StoreNode>>(lastLinks)
-        .distance((link) => linkDistanceFor(branching(link), params))
+        .distance((link) => {
+          const footprint = stats?.footprint;
+          if (!footprint) return params.linkMin;
+          const source = link.source as StoreNode;
+          const target = link.target as StoreNode;
+          return linkDistanceFor(footprint[source.id] ?? 0, footprint[target.id] ?? 0, params);
+        })
         .strength((link) => linkStrengthFor(branching(link), params)),
     )
     .alphaDecay(params.alphaDecay)
@@ -101,10 +120,14 @@ self.onmessage = (event: MessageEvent<ToWorker>) => {
 
   if (message.type === 'init') {
     store = new NodeStore(message.pathCount, message.parent, message.seed);
+    treeParent = message.parent;
     lastPost = 0;
     lastAppliedEpoch = 0;
     lastLinks = [];
     childCount = new Uint32Array(0);
+    stats = null;
+    lastActive = new Uint8Array(0);
+    lastRadius = new Float32Array(0);
     simulation?.stop();
     simulation = null;
     return;
@@ -115,6 +138,11 @@ self.onmessage = (event: MessageEvent<ToWorker>) => {
     // сообщение приходит из другого потока, и NaN в силе — это молча
     // застывшая раскладка без единого следа.
     params = sanitizeParams(message.params);
+    // Следы зависят от настроек упаковки и зазора, поэтому пересчитываются
+    // вместе с ними, а не только при смене состава.
+    if (lastActive.length > 0) {
+      stats = subtreeStats(lastActive, treeParent, lastRadius, params.collidePadding, params.packFill);
+    }
     if (simulation) {
       applyForces(simulation);
       // Подогреваем: без этого новые силы просто не на чем было бы применить —
@@ -167,6 +195,11 @@ self.onmessage = (event: MessageEvent<ToWorker>) => {
   // силу, то есть по видимому дереву, а не по истории.
   childCount = countChildren(message.linkSource, message.active.length);
   lastLinks = links;
+  // Радиусы живут в объектах узлов, а следам нужен массив по идентификатору.
+  lastActive = message.active;
+  lastRadius = new Float32Array(message.active.length);
+  for (const node of nodes) lastRadius[node.id] = node.radius;
+  stats = subtreeStats(lastActive, treeParent, lastRadius, params.collidePadding, params.packFill);
   applyForces(simulation);
 
   // Подогреваем: новые узлы должны разойтись, а не остаться в точке рождения.

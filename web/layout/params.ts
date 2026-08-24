@@ -24,10 +24,12 @@ export interface LayoutParams {
   chargeDistanceMax: number;
   /** Длина ребра к единственному ребёнку. */
   linkMin: number;
-  /** Насколько корень из числа детей удлиняет ребро. */
-  linkSpread: number;
-  /** Потолок длины ребра. */
+  /** Потолок длины ребра: страховка от вырожденного дерева, а не средство формы. */
   linkMax: number;
+  /** Плотность упаковки кружков в папке: меньше — папка просторнее. */
+  packFill: number;
+  /** Доля радиуса папки, на которой стоят её дети. */
+  folderFill: number;
   /** Жёсткость ребра к единственному ребёнку. */
   chainStrength: number;
   /** Жёсткость ребра у ветвящейся папки. */
@@ -48,8 +50,9 @@ export const DEFAULT_LAYOUT_PARAMS: LayoutParams = {
   dirChargePerRadius: -12.5,
   chargeDistanceMax: 490,
   linkMin: 10,
-  linkSpread: 5,
-  linkMax: 60,
+  linkMax: 1200,
+  packFill: 0.8,
+  folderFill: 0.8,
   chainStrength: 1,
   branchStrength: 0.7,
   collidePadding: 2,
@@ -116,20 +119,28 @@ export const LAYOUT_PARAM_SPECS: readonly ParamSpec[] = [
     hint: 'Длина ребра к единственному ребёнку. Цепочка транзитных папок состоит из таких рёбер.',
   },
   {
-    key: 'linkSpread',
-    label: 'Ребро: разброс',
-    min: 0,
-    max: 25,
-    step: 0.5,
-    hint: 'Насколько корень из числа детей удлиняет ребро: папке с полусотней детей нужно кольцо пошире.',
-  },
-  {
     key: 'linkMax',
     label: 'Ребро: потолок',
     min: 20,
-    max: 300,
-    step: 5,
-    hint: 'Дальше кольцо всё равно не помогает — узлы разводит столкновение.',
+    max: 4000,
+    step: 20,
+    hint: 'Страховка от вырожденного дерева, где одно поддерево занимает весь репозиторий. На здоровом дереве не срабатывает.',
+  },
+  {
+    key: 'packFill',
+    label: 'Плотность упаковки',
+    min: 0.4,
+    max: 1,
+    step: 0.05,
+    hint: 'Насколько плотно кружки укладываются в папку. Меньше — папка просторнее, и содержимое свободнее гуляет внутри.',
+  },
+  {
+    key: 'folderFill',
+    label: 'Заполнение папки',
+    min: 0.3,
+    max: 1.2,
+    step: 0.05,
+    hint: 'Доля радиуса папки, на которой стоят её дети: меньше — содержимое к центру, около единицы — по ободу.',
   },
   {
     key: 'chainStrength',
@@ -209,16 +220,35 @@ export function sanitizeParams(input: unknown): LayoutParams {
   return result;
 }
 
-/** Настройки в строку для хранилища. */
+/**
+ * Версия набора настроек. Поднимается, когда меняется смысл параметров или их
+ * умолчания, — сохранённое от прежней версии тогда читается как умолчание.
+ *
+ * Без этого обновление проходит незаметно и вредно: старое значение обычно
+ * лежит внутри новых границ, `sanitizeParams` его пропускает, и человек,
+ * однажды покрутивший ползунки, продолжает видеть прежнюю картинку, не
+ * догадываясь, что смотрит на позапрошлую физику.
+ */
+export const PARAMS_VERSION = 2;
+
+/** Настройки в строку для хранилища, вместе с версией набора. */
 export function encodeParams(params: LayoutParams): string {
-  return JSON.stringify(params);
+  return JSON.stringify({ v: PARAMS_VERSION, ...params });
 }
 
-/** Настройки из строки хранилища; любой мусор даёт умолчания. */
+/**
+ * Настройки из строки хранилища; любой мусор и любая чужая версия дают
+ * умолчания. Поле версии в `LayoutParams` не протекает: `sanitizeParams`
+ * берёт только описанные ключи.
+ */
 export function decodeParams(text: string | null): LayoutParams {
   if (text === null) return { ...DEFAULT_LAYOUT_PARAMS };
   try {
-    return sanitizeParams(JSON.parse(text));
+    const parsed: unknown = JSON.parse(text);
+    const version =
+      typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, unknown>)['v'] : undefined;
+    if (version !== PARAMS_VERSION) return { ...DEFAULT_LAYOUT_PARAMS };
+    return sanitizeParams(parsed);
   } catch {
     return { ...DEFAULT_LAYOUT_PARAMS };
   }
