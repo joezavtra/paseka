@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { DEFAULT_LAYOUT_PARAMS } from '../../web/layout/params.js';
 import {
   buildActiveLinks,
+  radialShare,
   chargeStrengthFor,
   countChildren,
   diffBorn,
@@ -154,6 +155,21 @@ describe('linkDistanceFor', () => {
     expect(linkDistanceFor(1e6, 0)).toBe(DEFAULT_LAYOUT_PARAMS.linkMax);
   });
 
+  it('дети разносятся по диску, а не садятся на одно кольцо', () => {
+    // С одной длиной покоя на всех папка на две тысячи файлов превращается в
+    // бублик с пустой серединой вдвое шире нужного.
+    const near = linkDistanceFor(459, 9, DEFAULT_LAYOUT_PARAMS, 0.2);
+    const far = linkDistanceFor(459, 9, DEFAULT_LAYOUT_PARAMS, 1);
+    expect(near).toBeLessThan(far / 2);
+  });
+
+  it('доля вне отрезка от нуля до единицы зажимается', () => {
+    expect(linkDistanceFor(459, 9, DEFAULT_LAYOUT_PARAMS, 5)).toBe(
+      linkDistanceFor(459, 9, DEFAULT_LAYOUT_PARAMS, 1),
+    );
+    expect(linkDistanceFor(459, 9, DEFAULT_LAYOUT_PARAMS, -1)).toBe(DEFAULT_LAYOUT_PARAMS.linkMin);
+  });
+
   it('негодные следы не ломают длину', () => {
     expect(linkDistanceFor(0, 0)).toBe(DEFAULT_LAYOUT_PARAMS.linkMin);
     expect(linkDistanceFor(10, 40)).toBe(DEFAULT_LAYOUT_PARAMS.linkMin);
@@ -224,5 +240,37 @@ describe('силы принимают настройки', () => {
   it('без настроек берутся замеренные умолчания', () => {
     expect(linkStrengthFor(1)).toBe(DEFAULT_LAYOUT_PARAMS.chainStrength);
     expect(chargeStrengthFor(0, 0)).toBe(DEFAULT_LAYOUT_PARAMS.leafCharge);
+  });
+});
+
+describe('radialShare', () => {
+  it('всегда лежит от нуля до единицы', () => {
+    for (const id of [0, 1, 7, 1000, 65535, 1_000_000]) {
+      const share = radialShare(id);
+      expect(share).toBeGreaterThanOrEqual(0);
+      expect(share).toBeLessThanOrEqual(1);
+    }
+  });
+
+  it('один и тот же путь всегда на одном удалении', () => {
+    // Иначе файл менял бы место в папке от кадра к кадру, и дерево дышало бы
+    // без причины.
+    expect(radialShare(4242)).toBe(radialShare(4242));
+  });
+
+  it('соседние идентификаторы дают разные доли', () => {
+    // Файлы одной папки идут подряд: без перемешивания они сели бы по спирали.
+    const shares = [10, 11, 12, 13, 14].map(radialShare);
+    expect(new Set(shares).size).toBe(shares.length);
+  });
+
+  it('доли распределены равномерно по площади, а не по радиусу', () => {
+    // Равномерность по площади означает, что во внешней половине радиуса
+    // оказывается три четверти точек — там и площади втрое больше.
+    const total = 4000;
+    let outer = 0;
+    for (let id = 0; id < total; id++) if (radialShare(id) > 0.5) outer++;
+    expect(outer / total).toBeGreaterThan(0.7);
+    expect(outer / total).toBeLessThan(0.8);
   });
 });
