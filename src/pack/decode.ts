@@ -25,7 +25,7 @@ export function decodePack(input: Uint8Array): Pack {
   const bytes = input.byteOffset % 4 === 0 ? input : new Uint8Array(input);
 
   if (bytes.length < HEADER_OFFSET || MAGIC.some((b, i) => bytes[i] !== b)) {
-    throw new PackError('Это не файл данных gource-reborn.');
+    throw new PackError('Это не файл данных paseka.');
   }
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const version = view.getUint32(4, true);

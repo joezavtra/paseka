@@ -84,7 +84,7 @@ export function parseArgs(argv: string[]): CliOptions {
     const detail = error instanceof Error ? error.message : String(error);
     throw new CliError(
       `Не удалось разобрать аргументы командной строки: ${detail}\n` +
-        'Список поддерживаемых флагов: gource-reborn --help',
+        'Список поддерживаемых флагов: paseka --help',
     );
   }
 
@@ -250,7 +250,7 @@ export async function run(argv: string[]): Promise<number> {
  * Определяет, запущен ли модуль напрямую как исполняемый файл (а не
  * импортирован тестами). Сравнивать `import.meta.url` с сырым
  * `process.argv[1]` нельзя: npm ставит бинарники симлинками
- * (`bin.gource-reborn` в package.json), `process.argv[1]` при запуске через
+ * (`bin.paseka` в package.json), `process.argv[1]` при запуске через
  * симлинк остаётся путём симлинка, а `import.meta.url` резолвится в
  * реальный путь файла — строки никогда не совпадут. Поэтому разыменовываем
  * оба пути перед сравнением; любая неудача (файла нет, путь не задан)
